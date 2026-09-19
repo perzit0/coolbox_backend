@@ -1,9 +1,10 @@
 """Modelos de dominio Coolbox.
 
 Diseñado para tienda física con proyección a venta en línea. Un usuario
-puede tener uno o varios roles (Administrador, Vendedor, Cajero, Almacenero,
-Supervisor). Cada rol otorga permisos concretos. Al ingresar al sistema, el
-usuario elige uno de sus roles activos antes de trabajar; ese rol define las
+puede tener uno o varios roles (Administrador, Vendedor, Almacenero,
+Supervisor de Ventas). Cada rol otorga permisos concretos. Todos ingresan por
+el mismo login; si el usuario tiene más de un rol, elige con cuál trabajar
+(el rol Administrador se elige igual que los demás) y ese rol define las
 acciones que puede realizar durante la sesión.
 """
 from datetime import datetime, date
@@ -142,6 +143,8 @@ class Producto(db.Model):
     stock = db.Column(db.Integer, nullable=False, default=0)
     stock_minimo = db.Column(db.Integer, nullable=False, default=5)
     activo = db.Column(db.Boolean, nullable=False, default=True)
+    # URL pública (https://...) o imagen subida como data URL (data:image/jpeg;base64,...)
+    imagen_url = db.Column(db.Text)
 
     categoria = relationship("Categoria", back_populates="productos")
 
@@ -158,6 +161,7 @@ class Producto(db.Model):
             "stock": self.stock,
             "stock_minimo": self.stock_minimo,
             "activo": self.activo,
+            "imagen_url": self.imagen_url,
         }
 
 
@@ -168,8 +172,8 @@ class Venta(db.Model):
     usuario_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False)
     rol_id = db.Column(db.Integer, ForeignKey("rol.id", ondelete="RESTRICT"), nullable=False)
     fecha = db.Column(db.DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    # Solo nombre de referencia: no se solicita DNI/RUC porque no hay validación con RENIEC/SUNAT.
     cliente_nombre = db.Column(db.String(180))
-    cliente_documento = db.Column(db.String(20))
     metodo_pago = db.Column(db.String(30), nullable=False, default="efectivo")
     subtotal = db.Column(db.Numeric(10, 2), nullable=False, default=0)
     igv = db.Column(db.Numeric(10, 2), nullable=False, default=0)
@@ -189,7 +193,6 @@ class Venta(db.Model):
             "rol": self.rol.nombre if self.rol else None,
             "fecha": self.fecha.isoformat() if self.fecha else None,
             "cliente_nombre": self.cliente_nombre,
-            "cliente_documento": self.cliente_documento,
             "metodo_pago": self.metodo_pago,
             "subtotal": float(self.subtotal),
             "igv": float(self.igv),
@@ -220,6 +223,7 @@ class VentaDetalle(db.Model):
             "producto_id": self.producto_id,
             "producto_codigo": self.producto.codigo if self.producto else None,
             "producto_nombre": self.producto.nombre if self.producto else None,
+            "producto_imagen_url": self.producto.imagen_url if self.producto else None,
             "cantidad": self.cantidad,
             "precio_unitario": float(self.precio_unitario),
             "subtotal": float(self.subtotal),

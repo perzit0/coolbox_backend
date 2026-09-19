@@ -18,7 +18,8 @@ El endpoint de salud está expuesto en `GET /health`.
 Usuarios demo:
 
 - Administrador — `admin@coolbox.com.pe` / `Admin123!`
-- Vendedor — `jperezl@coolbox.com.pe` / `Vendedor123!`
+- Vendedor — `jperezl@coolbox.com.pe` / `Vendedor123!` (en una BD nueva también tiene el rol Almacenero, para probar la selección de rol)
+- Supervisor de Ventas — `mtorresr@coolbox.com.pe` / `Supervisor123!`
 
 ## Variables de entorno
 
@@ -34,17 +35,19 @@ Usuarios demo:
 ## Reglas del negocio implementadas
 
 - **Correo automático**: `Juan Daniel Pérez Lozano → jperezl@coolbox.com.pe`. Si ya existe, se agrega un contador (`jperezl1`, `jperezl2`, ...). Ver `app/services/email_generator.py`.
-- **Login separado**: `POST /api/auth/login-admin` solo para administradores; `POST /api/auth/login-usuario` para el personal de tienda.
+- **Login único**: `POST /api/auth/login` para todo el personal. Con un solo rol, el rol queda activo al ingresar; con varios roles (el Administrador incluido) se elige en `POST /api/auth/seleccionar-rol`.
 - **Selección de rol**: al iniciar sesión, el usuario elige uno de sus roles (`POST /api/auth/seleccionar-rol`). El rol activo viaja en el JWT y controla qué endpoints puede usar.
-- **Roles predefinidos**: Administrador, Vendedor, Cajero, Almacenero, Supervisor. Un usuario puede tener varios roles asignados.
+- **Roles predefinidos**: Administrador, Vendedor, Almacenero, Supervisor de Ventas. Un usuario puede tener varios roles asignados. El rol Cajero se retiró (el Vendedor cobra): al arrancar, el seed lo elimina y reasigna sus usuarios y ventas a Vendedor.
+- **Anulación de ventas**: solo Supervisor de Ventas y Administrador (`ventas.anular`).
+- **Ventas sin DNI/RUC**: solo se guarda un nombre de cliente opcional (no hay validación con RENIEC/SUNAT).
+- **Imágenes de producto**: campo `imagen_url` (URL https o foto subida como data URL, máx. ~1 MB). La columna se agrega sola en BD existentes (`app/services/schema.py`).
 - **Ventas en tienda**: al registrar una venta se descuenta stock; al anularla se devuelve stock. El código correlativo es `V-000001`.
 
 ## API principal
 
 | Método y ruta                              | Descripción                                                          |
 | ------------------------------------------ | -------------------------------------------------------------------- |
-| `POST /api/auth/login-admin`               | Ingreso exclusivo de administrador.                                  |
-| `POST /api/auth/login-usuario`             | Ingreso del personal de tienda; requiere elegir rol.                 |
+| `POST /api/auth/login`                     | Ingreso único; si hay varios roles, `requiere_seleccion_rol: true`.  |
 | `POST /api/auth/seleccionar-rol`           | Fija el rol activo y emite un nuevo JWT.                             |
 | `GET  /api/auth/me`                        | Perfil del usuario y su rol activo.                                  |
 | `GET  /api/roles`                          | Catálogo de roles.                                                   |

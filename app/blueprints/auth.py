@@ -1,16 +1,16 @@
-"""Autenticación separada para administrador y usuarios normales.
+"""Autenticación con un único punto de ingreso.
 
-Existen dos endpoints de login:
-    - POST /api/auth/login-admin   -> solo acepta usuarios con rol Administrador
-    - POST /api/auth/login-usuario -> solo acepta usuarios NO administradores
-
-Al iniciar sesión se devuelve el usuario y sus roles activos. El usuario
-debe elegir uno de ellos antes de operar. La elección se envía a
-    POST /api/auth/seleccionar-rol
-que genera un nuevo JWT donde el `rol_activo` queda embebido y se convierte
-en la fuente de verdad para las validaciones de permisos.
+Flujo:
+    1. POST /api/auth/login            -> valida correo y contraseña.
+       - Si el usuario tiene un solo rol, ese rol queda activo de inmediato.
+       - Si tiene varios roles (incluido Administrador), se devuelve un token
+         sin rol activo y `requiere_seleccion_rol: true`.
+    2. POST /api/auth/seleccionar-rol  -> el usuario elige uno de sus roles
+       (el rol Administrador se elige aquí como cualquier otro). Se emite un
+       nuevo JWT con el `rol_activo_id`, que es la fuente de verdad para las
+       validaciones de permisos.
 """
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, jsonify, request
 from flask_jwt_extended import create_access_token, get_jwt, get_jwt_identity, jwt_required
 
 from ..errors import ApiError
@@ -19,18 +19,18 @@ from ..models import Rol, Usuario
 bp = Blueprint("auth", __name__)
 
 
-def _hacer_token(usuario: Usuario, rol_id=None):
-    """Construye un JWT con los claims necesarios."""
+def _hacer_token(usuario: Usuario, rol: Rol | None = None):
+    """Construye un JWT. `es_admin` refleja el rol ACTIVO, no los roles del usuario."""
     additional_claims = {
-        "es_admin": usuario.es_administrador,
-        "rol_activo_id": rol_id,
+        "es_admin": bool(rol and rol.es_admin),
+        "rol_activo_id": rol.id if rol else None,
     }
     return create_access_token(identity=str(usuario.id), additional_claims=additional_claims)
 
 
-@bp.post("/auth/login-admin")
-def login_admin():
-    """Ingreso exclusivo del panel administrativo."""
+@bp.post("/auth/login")
+def login():
+    """Ingreso único para todo el personal (administradores incluidos)."""
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
@@ -42,39 +42,6 @@ def login_admin():
         raise ApiError("credenciales_invalidas", "Correo o contraseña incorrectos.", 401)
     if usuario.estado != "activo":
         raise ApiError("usuario_inactivo", "El usuario está desactivado. Contacte al administrador.", 403)
-    if not usuario.es_administrador:
-        raise ApiError("acceso_denegado", "Este acceso es exclusivo para administradores.", 403)
-
-    # El administrador entra directamente con su rol admin activo
-    rol_admin = next((r for r in usuario.roles if r.es_admin), None)
-    token = _hacer_token(usuario, rol_id=rol_admin.id if rol_admin else None)
-    return jsonify(
-        access_token=token,
-        usuario=usuario.to_dict(),
-        rol_activo=rol_admin.to_dict() if rol_admin else None,
-    )
-
-
-@bp.post("/auth/login-usuario")
-def login_usuario():
-    """Ingreso del personal de tienda (no administradores)."""
-    data = request.get_json(silent=True) or {}
-    email = (data.get("email") or "").strip().lower()
-    password = data.get("password") or ""
-    if not email or not password:
-        raise ApiError("credenciales_invalidas", "Correo y contraseña son obligatorios.", 400)
-
-    usuario = Usuario.query.filter_by(email=email).first()
-    if not usuario or not usuario.check_password(password):
-        raise ApiError("credenciales_invalidas", "Correo o contraseña incorrectos.", 401)
-    if usuario.estado != "activo":
-        raise ApiError("usuario_inactivo", "El usuario está desactivado. Contacte al administrador.", 403)
-    if usuario.es_administrador:
-        raise ApiError(
-            "acceso_denegado",
-            "Los administradores deben usar el panel administrativo.",
-            403,
-        )
     if not usuario.roles:
         raise ApiError(
             "sin_roles",
@@ -82,10 +49,19 @@ def login_usuario():
             403,
         )
 
-    # Todavía no elige rol; le entregamos un token temporal SIN rol activo
-    token = _hacer_token(usuario, rol_id=None)
+    # Un solo rol: se activa automáticamente
+    if len(usuario.roles) == 1:
+        rol = usuario.roles[0]
+        return jsonify(
+            access_token=_hacer_token(usuario, rol),
+            usuario=usuario.to_dict(),
+            rol_activo=rol.to_dict(),
+            requiere_seleccion_rol=False,
+        )
+
+    # Varios roles: token temporal SIN rol activo hasta que elija uno
     return jsonify(
-        access_token=token,
+        access_token=_hacer_token(usuario, None),
         usuario=usuario.to_dict(),
         rol_activo=None,
         requiere_seleccion_rol=True,
@@ -102,12 +78,13 @@ def seleccionar_rol():
         raise ApiError("rol_requerido", "Debe indicar el rol a activar.", 400)
 
     usuario = Usuario.query.get_or_404(int(get_jwt_identity()))
+    if usuario.estado != "activo":
+        raise ApiError("usuario_inactivo", "El usuario está desactivado. Contacte al administrador.", 403)
     rol = Rol.query.get(int(rol_id))
     if not rol or rol not in usuario.roles:
         raise ApiError("rol_no_asignado", "El rol seleccionado no está asignado al usuario.", 403)
 
-    token = _hacer_token(usuario, rol_id=rol.id)
-    return jsonify(access_token=token, usuario=usuario.to_dict(), rol_activo=rol.to_dict())
+    return jsonify(access_token=_hacer_token(usuario, rol), usuario=usuario.to_dict(), rol_activo=rol.to_dict())
 
 
 @bp.get("/auth/me")
@@ -115,9 +92,10 @@ def seleccionar_rol():
 def me():
     """Devuelve el usuario y su rol activo (según el token)."""
     usuario = Usuario.query.get_or_404(int(get_jwt_identity()))
-    claims = get_jwt()
-    rol_activo_id = claims.get("rol_activo_id")
-    rol_activo = Rol.query.get(rol_activo_id) if rol_activo_id else None
+    rol_activo = _rol_activo()
+    # Si al usuario le retiraron el rol activo, la sesión vuelve a pedir selección
+    if rol_activo and rol_activo not in usuario.roles:
+        rol_activo = None
     return jsonify(usuario=usuario.to_dict(), rol_activo=rol_activo.to_dict() if rol_activo else None)
 
 
@@ -138,6 +116,9 @@ def require_permiso(codigo):
     rol = _rol_activo()
     if not rol:
         raise ApiError("rol_no_seleccionado", "Debe seleccionar un rol para operar.", 403)
+    usuario = _usuario_actual()
+    if not usuario or usuario.estado != "activo" or rol not in usuario.roles:
+        raise ApiError("rol_no_asignado", "El rol activo ya no está asignado a este usuario.", 403)
     if codigo not in {p.codigo for p in rol.permisos}:
         raise ApiError(
             "permiso_insuficiente",

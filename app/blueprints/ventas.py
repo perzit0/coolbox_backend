@@ -52,8 +52,8 @@ def crear_venta():
     if metodo_pago not in ("efectivo", "tarjeta", "yape", "plin", "transferencia"):
         raise ApiError("metodo_invalido", "Método de pago no soportado.", 400)
 
-    cliente_nombre = (data.get("cliente_nombre") or "").strip() or None
-    cliente_documento = (data.get("cliente_documento") or "").strip() or None
+    # El prototipo no solicita DNI/RUC (no hay validación contra RENIEC/SUNAT).
+    cliente_nombre = (data.get("cliente_nombre") or "").strip()[:180] or None
 
     igv_rate = Decimal(str(current_app.config.get("IGV_RATE", 0.18)))
 
@@ -100,7 +100,6 @@ def crear_venta():
         usuario_id=usuario.id,
         rol_id=rol.id,
         cliente_nombre=cliente_nombre,
-        cliente_documento=cliente_documento,
         metodo_pago=metodo_pago,
         subtotal=base,
         igv=igv,

@@ -21,6 +21,12 @@ PERMISOS = [
     ("reportes.ver", "Consultar reportes de operación"),
 ]
 
+# Roles que existieron en versiones anteriores y deben retirarse de la BD.
+ROLES_OBSOLETOS = {
+    # codigo_obsoleto: codigo_de_reemplazo (para reasignar usuarios y ventas)
+    "cajero": "vendedor",
+}
+
 ROLES = [
     {
         "codigo": "administrador",
@@ -38,16 +44,10 @@ ROLES = [
     {
         "codigo": "vendedor",
         "nombre": "Vendedor",
-        "descripcion": "Atiende al cliente en tienda, arma la venta y consulta productos disponibles.",
+        "descripcion": "Atiende al cliente en tienda, registra la venta, cobra y entrega el comprobante.",
         "es_admin": False,
+        # Sin "ventas.anular": solo el Supervisor (y el Administrador) anulan ventas.
         "permisos": ["productos.ver", "ventas.crear", "ventas.ver"],
-    },
-    {
-        "codigo": "cajero",
-        "nombre": "Cajero",
-        "descripcion": "Cobra las ventas, valida el pago y entrega el comprobante.",
-        "es_admin": False,
-        "permisos": ["ventas.crear", "ventas.ver"],
     },
     {
         "codigo": "almacenero",
@@ -58,8 +58,8 @@ ROLES = [
     },
     {
         "codigo": "supervisor",
-        "nombre": "Supervisor",
-        "descripcion": "Revisa reportes de operación y puede anular ventas ante incidencias.",
+        "nombre": "Supervisor de Ventas",
+        "descripcion": "Supervisa las ventas de tienda, revisa reportes y es el único rol de tienda que puede anular ventas.",
         "es_admin": False,
         "permisos": ["productos.ver", "ventas.ver", "ventas.anular", "reportes.ver"],
     },

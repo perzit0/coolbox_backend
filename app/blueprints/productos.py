@@ -8,6 +8,35 @@ from .auth import require_permiso
 
 bp = Blueprint("productos", __name__)
 
+# Imagen subida en base64: se limita para no inflar la BD (el frontend la reduce a ~600px).
+MAX_IMAGEN_CHARS = 1_500_000
+
+
+def _validar_imagen(valor):
+    """Acepta una URL http(s) o una data URL de imagen. Vacío = sin imagen."""
+    valor = (valor or "").strip()
+    if not valor:
+        return None
+    if valor.startswith(("http://", "https://")):
+        if len(valor) > 2000:
+            raise ApiError("imagen_invalida", "La URL de la imagen es demasiado larga.", 400)
+        return valor
+    if valor.startswith("data:image/") and ";base64," in valor:
+        if len(valor) > MAX_IMAGEN_CHARS:
+            raise ApiError("imagen_muy_grande", "La imagen es demasiado pesada (máximo aprox. 1 MB).", 400)
+        return valor
+    raise ApiError("imagen_invalida", "La imagen debe ser una URL http(s) o un archivo de imagen.", 400)
+
+
+def _numero(data, campo, tipo, minimo=0):
+    try:
+        valor = tipo(data[campo])
+    except (TypeError, ValueError):
+        raise ApiError("datos_invalidos", f"El campo '{campo}' debe ser numérico.", 400)
+    if valor < minimo:
+        raise ApiError("valor_negativo", f"El campo '{campo}' no puede ser negativo.", 400)
+    return valor
+
 
 @bp.get("/categorias")
 @jwt_required()
@@ -67,16 +96,19 @@ def crear_producto():
     if not Categoria.query.get(int(categoria_id)):
         raise ApiError("categoria_invalida", "La categoría indicada no existe.", 400)
 
+    data.setdefault("stock", 0)
+    data.setdefault("stock_minimo", 5)
     producto = Producto(
         codigo=codigo,
         nombre=nombre,
         descripcion=(data.get("descripcion") or "").strip() or None,
         marca=(data.get("marca") or "").strip() or None,
         categoria_id=int(categoria_id),
-        precio=round(float(precio), 2),
-        stock=int(data.get("stock") or 0),
-        stock_minimo=int(data.get("stock_minimo") or 5),
+        precio=round(_numero(data, "precio", float), 2),
+        stock=_numero(data, "stock", int),
+        stock_minimo=_numero(data, "stock_minimo", int),
         activo=bool(data.get("activo", True)),
+        imagen_url=_validar_imagen(data.get("imagen_url")),
     )
     db.session.add(producto)
     db.session.commit()
@@ -95,17 +127,19 @@ def editar_producto(producto_id):
             valor = (data[campo] or "").strip()
             setattr(producto, campo, valor or None if campo != "nombre" else valor)
     if "precio" in data:
-        producto.precio = round(float(data["precio"]), 2)
+        producto.precio = round(_numero(data, "precio", float), 2)
     if "categoria_id" in data:
         if not Categoria.query.get(int(data["categoria_id"])):
             raise ApiError("categoria_invalida", "La categoría indicada no existe.", 400)
         producto.categoria_id = int(data["categoria_id"])
     if "stock" in data:
-        producto.stock = int(data["stock"])
+        producto.stock = _numero(data, "stock", int)
     if "stock_minimo" in data:
-        producto.stock_minimo = int(data["stock_minimo"])
+        producto.stock_minimo = _numero(data, "stock_minimo", int)
     if "activo" in data:
         producto.activo = bool(data["activo"])
+    if "imagen_url" in data:
+        producto.imagen_url = _validar_imagen(data["imagen_url"])
 
     db.session.commit()
     return jsonify(producto=producto.to_dict())
@@ -122,7 +156,7 @@ def actualizar_stock(producto_id):
     if delta is None and absoluto is None:
         raise ApiError("datos_invalidos", "Envíe 'delta' (suma/resta) o 'stock' (valor absoluto).", 400)
     if absoluto is not None:
-        producto.stock = max(0, int(absoluto))
+        producto.stock = _numero(data, "stock", int)
     else:
         nuevo = producto.stock + int(delta)
         if nuevo < 0:

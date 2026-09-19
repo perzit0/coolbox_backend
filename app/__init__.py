@@ -77,6 +77,8 @@ def create_app(config_object="config.Config"):
         from . import models  # noqa: F401 - registra los modelos
         try:
             db.create_all()
+            from .services.schema import aplicar_migraciones_ligeras
+            aplicar_migraciones_ligeras()
             from scripts.seed_catalogo import seed_catalogo_maestro
             seed_catalogo_maestro()
         except Exception as exc:  # no bloquear el arranque si la BD no está lista
