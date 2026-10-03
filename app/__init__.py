@@ -27,23 +27,32 @@ def create_app(config_object="config.Config"):
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     )
 
+    # Respuesta CORS explícita: si FRONTEND_ORIGIN es "*" se refleja el origen;
+    # si es una lista (p. ej. la URL de Vercel), solo se aceptan esos orígenes.
+    def _origen_permitido(origin):
+        if not origin:
+            return None
+        if cors_origins == "*":
+            return origin
+        return origin if origin in cors_origins else None
+
+    def _cabeceras_cors(response):
+        origin = _origen_permitido(request.headers.get("Origin"))
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Accept"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+        return response
+
     @app.before_request
     def handle_preflight():
         if request.method == "OPTIONS":
-            response = app.make_default_options_response()
-            origin = request.headers.get("Origin")
-            response.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
-            response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Accept"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
-            return response
+            return _cabeceras_cors(app.make_default_options_response())
 
     @app.after_request
     def set_cors_headers(response):
-        origin = request.headers.get("Origin")
-        response.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Accept"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
-        return response
+        return _cabeceras_cors(response)
 
     register_error_handlers(app)
 
@@ -66,8 +75,9 @@ def create_app(config_object="config.Config"):
     from .blueprints.roles import bp as roles_bp
     from .blueprints.productos import bp as productos_bp
     from .blueprints.ventas import bp as ventas_bp
+    from .blueprints.reportes import bp as reportes_bp
 
-    for blueprint in (auth_bp, usuarios_bp, roles_bp, productos_bp, ventas_bp):
+    for blueprint in (auth_bp, usuarios_bp, roles_bp, productos_bp, ventas_bp, reportes_bp):
         app.register_blueprint(blueprint, url_prefix="/api")
 
     # Auto-seed en el primer arranque (útil para Render + Supabase, ya que
@@ -82,14 +92,26 @@ def create_app(config_object="config.Config"):
             from scripts.seed_catalogo import seed_catalogo_maestro
             seed_catalogo_maestro()
         except Exception as exc:  # no bloquear el arranque si la BD no está lista
+            db.session.rollback()
             app.logger.warning("No fue posible ejecutar seed automático: %s", exc)
 
     @app.get("/")
     def root():
-        return {"servicio": "coolbox-backend", "estado": "ok", "docs": "/health"}
+        return {"servicio": "coolbox-backend", "version": "2.0.0", "estado": "ok", "docs": "/health"}
 
     @app.get("/health")
     def health():
         return {"status": "ok"}
+
+    @app.get("/health/db")
+    def health_db():
+        """Verifica la conexión con la base de datos (útil para diagnosticar Render/Supabase)."""
+        from sqlalchemy import text
+        try:
+            db.session.execute(text("SELECT 1"))
+            return {"status": "ok", "database": "conectada"}
+        except Exception as exc:  # pragma: no cover
+            app.logger.error("Fallo de conexión a BD: %s", exc)
+            return {"status": "error", "database": "sin conexión"}, 503
 
     return app

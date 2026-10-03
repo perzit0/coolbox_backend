@@ -1,4 +1,4 @@
-from flask import jsonify
+from flask import current_app, jsonify
 
 
 class ApiError(Exception):
@@ -23,7 +23,18 @@ def register_error_handlers(app):
 
     @app.errorhandler(500)
     def server_error(err):
-        return jsonify(error="error_interno", detail=str(err) or "Error interno del servidor."), 500
+        current_app.logger.exception("Error interno: %s", err)
+        return jsonify(error="error_interno", detail="Ocurrió un error interno. Intente nuevamente o contacte a soporte."), 500
+
+    @app.errorhandler(Exception)
+    def unhandled(err):
+        from werkzeug.exceptions import HTTPException
+        if isinstance(err, HTTPException):
+            return jsonify(error="error_http", detail=err.description), err.code
+        from .extensions import db
+        db.session.rollback()
+        current_app.logger.exception("Excepción no controlada: %s", err)
+        return jsonify(error="error_interno", detail="Ocurrió un error interno. Intente nuevamente o contacte a soporte."), 500
 
     @app.errorhandler(422)
     def invalid_token(_):

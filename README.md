@@ -12,8 +12,11 @@ despliega en Render y sirve al frontend en Vercel.
 4. Inicia la API: `flask --app wsgi:app run --debug`.
 
 Al arrancar por primera vez el backend crea las tablas y carga el catálogo
-maestro (permisos, roles, categorías, 20 productos reales y usuarios demo).
-El endpoint de salud está expuesto en `GET /health`.
+maestro (permisos, roles, familias/subfamilias/marcas, 39 productos reales de
+coolbox.pe con su imagen oficial y SKU, y usuarios demo). Si la BD ya tenía
+la versión anterior, los 20 productos antiguos (LAP001, CEL001...) se
+convierten en su equivalente real conservando stock y ventas.
+Endpoints de salud: `GET /health` y `GET /health/db` (prueba la conexión a la BD).
 
 Usuarios demo:
 
@@ -85,3 +88,48 @@ Usuarios demo:
 - **CORS bloqueado** — el after-request añade siempre los encabezados y se maneja explícitamente `OPTIONS` antes de llegar al blueprint.
 - **Timeouts de Supabase** — `SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True, "pool_recycle": 300}` renueva conexiones muertas.
 - **Health check en `/`** — se agregó `GET /` para que Render deje de marcar la app como inactiva; el health-check oficial sigue en `/health`.
+
+
+## Novedades v2.0
+
+**SKU de 8 dígitos** (`app/services/catalogo.py`): `FF SS MM CC` = familia +
+subfamilia + marca + correlativo. Ej. `10020401` = Laptops (10) · Laptops gamer
+(02) · HP (04) · primer producto (01). Se genera al registrar el producto y es
+inmutable. Endpoints: `GET /api/familias`, `GET/POST /api/marcas`,
+`GET /api/productos/sku-preview`.
+
+| Familia | Código | Subfamilias |
+| --- | --- | --- |
+| Laptops | 10 | 01 Uso personal y oficina · 02 Gamer · 03 Ultradelgadas y premium |
+| Celulares | 20 | 01 Gama de entrada · 02 Gama media · 03 Gama alta |
+| Tablets | 30 | 01 Tablets · 02 Para niños · 03 Tabletas gráficas |
+| Televisores | 40 | 01 LED HD/FHD · 02 LED 4K · 03 QLED/NanoCell/QNED · 04 Mini LED/OLED |
+| Audio | 50 | 01 On ear · 02 True wireless · 03 Parlantes portátiles · 04 Barras de sonido |
+| Smartwatch y Wearables | 60 | 01 Smartwatch · 02 Smartband |
+| Gamer | 70 | 01 Consolas · 02 Consolas portátiles · 03 Mandos y accesorios · 04 Sillas gamer |
+| Accesorios de Cómputo | 80 | 01 Mouse · 02 Teclados · 03 Monitores · 04 Headsets |
+
+**Kardex** (`movimiento_stock`): cada cambio de stock (stock inicial, entrada,
+salida, ajuste por conteo, venta y anulación) guarda cantidad, saldo anterior y
+nuevo, motivo y usuario. `POST /api/productos/<id>/stock` acepta
+`{tipo, cantidad, motivo}`; `GET /api/productos/<id>/movimientos` y
+`GET /api/movimientos`. Nuevo permiso `kardex.ver`.
+
+**Seguridad de cuentas**: contraseña temporal obligatoria de cambiar en el
+primer ingreso y tras un restablecimiento (`POST /api/auth/cambiar-password`),
+política mínima (8+ caracteres con letras y números, distinta del DNI),
+bloqueo de 10 min tras 5 intentos fallidos (`POST /api/usuarios/<id>/desbloquear`),
+registro de último acceso, el administrador no puede desactivarse ni quitarse
+su propio rol. DNI de 8 dígitos y celular de 9 dígitos validados.
+
+**Ventas**: vuelto para pagos en efectivo, anulación con motivo obligatorio
+(guarda quién y cuándo anuló), historial con filtros por fecha (hora de Lima),
+estado, método de pago y vendedor, con paginación.
+
+**Reportes** (`GET /api/reportes/resumen?desde&hasta`): total, IGV, ticket
+promedio, ventas por día, por familia, por método de pago, por vendedor y top
+10 de productos. `GET /api/reportes/inventario`: inventario valorizado y
+productos por reponer.
+
+**Migración automática**: al arrancar se agregan las columnas/tablas nuevas
+sobre la BD existente de Supabase (no hay que tocar nada a mano).
