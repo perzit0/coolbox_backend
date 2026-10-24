@@ -1,8 +1,12 @@
 """Turnos de caja del vendedor.
 
-    GET  /api/cajas/mi-caja  -> caja abierta del usuario (o null) con su resumen
-    POST /api/cajas/abrir    -> abre la caja con un fondo inicial en efectivo
+    GET  /api/cajas/mi-caja    -> caja abierta del usuario (o null) con su resumen
+    POST /api/cajas/abrir      -> abre la caja con un fondo inicial en efectivo
+    POST /api/cajas/cerrar     -> cierra la caja con el arqueo (conteo de efectivo)
+    GET  /api/cajas/mis-cajas  -> últimos turnos del usuario
+    GET  /api/cajas/<id>       -> detalle de un turno (reporte de cierre)
 """
+import json
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
@@ -11,8 +15,8 @@ from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
 from ..extensions import db
-from ..models import Caja, Usuario
-from ..services.caja import caja_abierta_de, caja_con_resumen
+from ..models import Caja, Usuario, ahora
+from ..services.caja import DENOMINACIONES, caja_abierta_de, caja_con_resumen, calcular_conteo, resumen_caja
 from .auth import _usuario_actual, require_permiso
 
 bp = Blueprint("cajas", __name__)
@@ -60,3 +64,75 @@ def abrir_caja():
     caja.codigo = f"C-{caja.id:06d}"
     db.session.commit()
     return jsonify(caja=caja_con_resumen(caja)), 201
+
+
+@bp.get("/cajas/denominaciones")
+@jwt_required()
+def denominaciones():
+    return jsonify(denominaciones=DENOMINACIONES)
+
+
+@bp.post("/cajas/cerrar")
+@jwt_required()
+def cerrar_caja():
+    """Arqueo: el vendedor cuenta el efectivo por denominación.
+
+    diferencia = contado - esperado  (positiva = sobrante, negativa = faltante).
+    Si hay diferencia, la observación es obligatoria.
+    """
+    require_permiso("caja.operar")
+    usuario = _usuario_actual()
+    caja = (Caja.query.filter_by(usuario_id=usuario.id, estado="abierta")
+            .with_for_update().first())
+    if not caja:
+        raise ApiError("caja_cerrada", "No tiene una caja abierta para cerrar.", 409)
+
+    data = request.get_json(silent=True) or {}
+    conteo, contado = calcular_conteo(data.get("conteo") or {})
+    resumen = resumen_caja(caja)
+    esperado = Decimal(str(resumen["efectivo_esperado"]))
+    diferencia = (contado - esperado).quantize(Decimal("0.01"))
+    observacion = (data.get("observacion") or "").strip()
+    if diferencia != 0 and len(observacion) < 10:
+        tipo = "sobrante" if diferencia > 0 else "faltante"
+        raise ApiError("observacion_requerida",
+                       f"Hay un {tipo} de S/ {abs(diferencia)}. Explique la diferencia (mínimo 10 caracteres).", 400)
+
+    caja.efectivo_esperado = esperado
+    caja.efectivo_contado = contado
+    caja.diferencia = diferencia
+    caja.conteo_json = json.dumps(conteo)
+    caja.observacion_cierre = observacion[:240] or None
+    caja.fecha_cierre = ahora()
+    caja.estado = "cerrada"
+    db.session.commit()
+    return jsonify(caja=caja_con_resumen(caja, include_ventas=True))
+
+
+@bp.get("/cajas/mis-cajas")
+@jwt_required()
+def mis_cajas():
+    require_permiso("caja.operar")
+    cajas = (Caja.query.filter_by(usuario_id=_usuario_actual().id)
+             .order_by(Caja.fecha_apertura.desc()).limit(15).all())
+    return jsonify(cajas=[caja_con_resumen(c) for c in cajas])
+
+
+def _puede_ver_caja(caja):
+    """El dueño ve su caja; quien tenga caja.supervisar ve todas."""
+    from .auth import _rol_activo
+    rol = _rol_activo()
+    permisos = {p.codigo for p in rol.permisos} if rol else set()
+    if "caja.supervisar" in permisos:
+        return True
+    return "caja.operar" in permisos and caja.usuario_id == _usuario_actual().id
+
+
+@bp.get("/cajas/<int:caja_id>")
+@jwt_required()
+def detalle_caja(caja_id):
+    require_permiso("ventas.ver")
+    caja = db.session.get(Caja, caja_id)
+    if not caja or not _puede_ver_caja(caja):
+        raise ApiError("caja_no_encontrada", "La caja no existe o no tiene acceso a ella.", 404)
+    return jsonify(caja=caja_con_resumen(caja, include_ventas=True))
