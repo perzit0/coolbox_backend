@@ -26,6 +26,9 @@ PERMISOS = [
 ROLES_OBSOLETOS = {
     # codigo_obsoleto: codigo_de_reemplazo (para reasignar usuarios y ventas)
     "cajero": "vendedor",
+    # El módulo se concentra en ventas y caja: las tareas de almacén
+    # (entradas, salidas, ajustes y kardex) pasan al Administrador.
+    "almacenero": None,
 }
 
 ROLES = [
@@ -50,13 +53,6 @@ ROLES = [
         "es_admin": False,
         # Sin "ventas.anular": solo el Supervisor (y el Administrador) anulan ventas.
         "permisos": ["productos.ver", "ventas.crear", "ventas.ver"],
-    },
-    {
-        "codigo": "almacenero",
-        "nombre": "Almacenero",
-        "descripcion": "Recepciona mercadería, actualiza el stock y controla el inventario de tienda.",
-        "es_admin": False,
-        "permisos": ["productos.ver", "productos.editar", "stock.actualizar", "kardex.ver"],
     },
     {
         "codigo": "supervisor",

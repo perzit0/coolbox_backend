@@ -6,6 +6,7 @@ Ambos movimientos quedan en el kardex.
 """
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from uuid import uuid4
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import jwt_required
@@ -167,7 +168,9 @@ def crear_venta():
         vuelto = (monto_recibido - total).quantize(CENTIMO)
 
     venta = Venta(
-        codigo="temporal", usuario_id=usuario.id, rol_id=rol.id, cliente_nombre=cliente_nombre,
+        # Código provisional único: dos cajas pueden registrar ventas a la vez
+        # sin chocar con la restricción UNIQUE antes de asignar el correlativo.
+        codigo=f"TMP-{uuid4().hex[:16]}", usuario_id=usuario.id, rol_id=rol.id, cliente_nombre=cliente_nombre,
         metodo_pago=metodo_pago, subtotal=base, igv=igv, total=total,
         monto_recibido=monto_recibido, vuelto=vuelto, estado="completada",
     )
@@ -188,7 +191,11 @@ def crear_venta():
 @jwt_required()
 def anular_venta(venta_id):
     require_permiso("ventas.anular")
-    venta = db.get_or_404(Venta, venta_id)
+    # Se bloquea la fila: si dos supervisores anulan a la vez, el segundo espera
+    # y encuentra la venta ya anulada (el stock no se devuelve dos veces).
+    venta = Venta.query.filter_by(id=venta_id).with_for_update().first()
+    if not venta:
+        raise ApiError("venta_no_encontrada", "La venta no existe.", 404)
     if venta.estado == "anulada":
         raise ApiError("venta_anulada", "La venta ya se encuentra anulada.", 409)
     motivo = ((request.get_json(silent=True) or {}).get("motivo") or "").strip()

@@ -56,8 +56,21 @@ def login():
     if not usuario:
         raise ApiError("credenciales_invalidas", "Correo o contraseña incorrectos.", 401)
 
+    password_ok = usuario.check_password(password)
+
+    # Cuenta desactivada: no suma intentos y solo se informa si la clave es correcta,
+    # para no revelar a terceros qué correos existen.
+    if usuario.estado != "activo":
+        if not password_ok:
+            raise ApiError("credenciales_invalidas", "Correo o contraseña incorrectos.", 401)
+        raise ApiError("usuario_inactivo", "El usuario está desactivado. Contacte al administrador.", 403)
+
     bloqueado_hasta = _aware(usuario.bloqueado_hasta)
     if bloqueado_hasta and bloqueado_hasta > ahora():
+        # Durante el bloqueo no se cuentan más intentos y una clave errada recibe
+        # la misma respuesta genérica que un correo inexistente.
+        if not password_ok:
+            raise ApiError("credenciales_invalidas", "Correo o contraseña incorrectos.", 401)
         minutos = max(1, int((bloqueado_hasta - ahora()).total_seconds() // 60) + 1)
         raise ApiError(
             "cuenta_bloqueada",
@@ -65,7 +78,7 @@ def login():
             423,
         )
 
-    if not usuario.check_password(password):
+    if not password_ok:
         usuario.intentos_fallidos = (usuario.intentos_fallidos or 0) + 1
         restantes = MAX_INTENTOS - usuario.intentos_fallidos
         if restantes <= 0:
@@ -81,8 +94,6 @@ def login():
         aviso = f" Le queda{'n' if restantes > 1 else ''} {restantes} intento{'s' if restantes > 1 else ''}." if restantes <= 2 else ""
         raise ApiError("credenciales_invalidas", f"Correo o contraseña incorrectos.{aviso}", 401)
 
-    if usuario.estado != "activo":
-        raise ApiError("usuario_inactivo", "El usuario está desactivado. Contacte al administrador.", 403)
     if not usuario.roles:
         raise ApiError("sin_roles", "Este usuario aún no tiene roles asignados. Contacte al administrador.", 403)
 
@@ -127,6 +138,20 @@ def seleccionar_rol():
         raise ApiError("rol_no_asignado", "El rol seleccionado no está asignado al usuario.", 403)
 
     return jsonify(access_token=_hacer_token(usuario, rol), usuario=usuario.to_dict(), rol_activo=rol.to_dict())
+
+
+@bp.post("/auth/liberar-rol")
+@jwt_required()
+def liberar_rol():
+    """"Cambiar rol": emite un token SIN rol activo.
+
+    Así el rol anterior deja de valer aunque el usuario recargue la página
+    en la pantalla de selección.
+    """
+    usuario = _usuario_actual_o_404()
+    if usuario.estado != "activo":
+        raise ApiError("usuario_inactivo", "El usuario está desactivado. Contacte al administrador.", 403)
+    return jsonify(access_token=_hacer_token(usuario, None), usuario=usuario.to_dict(), rol_activo=None)
 
 
 @bp.get("/auth/me")

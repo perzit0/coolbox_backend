@@ -1,7 +1,7 @@
 """Modelos de dominio Coolbox.
 
 Diseñado para tienda física con proyección a venta en línea. Un usuario
-puede tener uno o varios roles (Administrador, Vendedor, Almacenero,
+puede tener uno o varios roles (Administrador, Vendedor,
 Supervisor de Ventas). Cada rol otorga permisos concretos. Todos ingresan por
 el mismo login; si el usuario tiene más de un rol, elige con cuál trabajar
 (el rol Administrador se elige igual que los demás) y ese rol define las

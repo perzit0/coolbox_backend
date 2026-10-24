@@ -21,8 +21,8 @@ Endpoints de salud: `GET /health` y `GET /health/db` (prueba la conexión a la B
 Usuarios demo:
 
 - Administrador — `admin@coolbox.com.pe` / `Admin123!`
-- Vendedor — `jperezl@coolbox.com.pe` / `Vendedor123!` (en una BD nueva también tiene el rol Almacenero, para probar la selección de rol)
-- Supervisor de Ventas — `mtorresr@coolbox.com.pe` / `Supervisor123!`
+- Vendedor — `jperezl@coolbox.com.pe` / `Vendedor123!`
+- Supervisor de Ventas — `mtorresr@coolbox.com.pe` / `Supervisor123!` (en una BD nueva también tiene el rol Vendedor, para probar la selección de rol)
 
 ## Variables de entorno
 
@@ -40,7 +40,7 @@ Usuarios demo:
 - **Correo automático**: `Juan Daniel Pérez Lozano → jperezl@coolbox.com.pe`. Si ya existe, se agrega un contador (`jperezl1`, `jperezl2`, ...). Ver `app/services/email_generator.py`.
 - **Login único**: `POST /api/auth/login` para todo el personal. Con un solo rol, el rol queda activo al ingresar; con varios roles (el Administrador incluido) se elige en `POST /api/auth/seleccionar-rol`.
 - **Selección de rol**: al iniciar sesión, el usuario elige uno de sus roles (`POST /api/auth/seleccionar-rol`). El rol activo viaja en el JWT y controla qué endpoints puede usar.
-- **Roles predefinidos**: Administrador, Vendedor, Almacenero, Supervisor de Ventas. Un usuario puede tener varios roles asignados. El rol Cajero se retiró (el Vendedor cobra): al arrancar, el seed lo elimina y reasigna sus usuarios y ventas a Vendedor.
+- **Roles predefinidos**: Administrador, Vendedor y Supervisor de Ventas. Un usuario puede tener varios roles asignados. Se retiraron Cajero (el Vendedor cobra; sus usuarios y ventas pasan a Vendedor) y Almacenero (el módulo se concentra en ventas y caja; entradas, salidas y kardex quedan en el Administrador).
 - **Anulación de ventas**: solo Supervisor de Ventas y Administrador (`ventas.anular`).
 - **Ventas sin DNI/RUC**: solo se guarda un nombre de cliente opcional (no hay validación con RENIEC/SUNAT).
 - **Imágenes de producto**: campo `imagen_url` (URL https o foto subida como data URL, máx. ~1 MB). La columna se agrega sola en BD existentes (`app/services/schema.py`).

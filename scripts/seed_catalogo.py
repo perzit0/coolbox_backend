@@ -1,13 +1,13 @@
 """Seed idempotente que carga catálogo maestro + demo:
 
-- Permisos y roles (catálogo maestro). Retira roles obsoletos (Cajero).
+- Permisos y roles (catálogo maestro). Retira roles obsoletos (Cajero, Almacenero).
 - Familias, subfamilias y marcas (estructura del SKU de 8 dígitos).
 - 37 productos reales de coolbox.pe (nombre, referencia, precio e imagen
   oficial publicados en la tienda en línea de Coolbox, octubre 2026).
 - Migra los 20 productos de la versión anterior (LAP001, CEL001...) a su
   equivalente real, conservando su stock y su historial de ventas.
 - Asigna SKU a cualquier producto que aún no lo tenga.
-- Usuarios demo: administrador, vendedor/almacenero y supervisor de ventas.
+- Usuarios demo: administrador, vendedor y supervisor de ventas (este último también vende).
 
 Se invoca automáticamente al iniciar la app (ver app/__init__.py) para que
 Render + Supabase queden listos sin comandos manuales adicionales.
@@ -213,12 +213,20 @@ def _seed_roles():
 
 
 def _retirar_roles_obsoletos():
-    """Elimina roles retirados (p. ej. Cajero) sin perder usuarios ni ventas."""
+    """Elimina roles retirados (Cajero, Almacenero) sin perder usuarios ni ventas.
+
+    Si el rol tiene reemplazo, sus usuarios y ventas pasan al rol nuevo.
+    Si no lo tiene (Almacenero), solo se retira de los usuarios; quien se quede
+    sin roles deberá recibir uno nuevo desde la gestión de usuarios.
+    """
     for codigo_obsoleto, codigo_reemplazo in ROLES_OBSOLETOS.items():
         viejo = Rol.query.filter_by(codigo=codigo_obsoleto).first()
         if not viejo:
             continue
-        nuevo = Rol.query.filter_by(codigo=codigo_reemplazo).first()
+        nuevo = Rol.query.filter_by(codigo=codigo_reemplazo).first() if codigo_reemplazo else None
+        if not nuevo and Venta.query.filter_by(rol_id=viejo.id).first():
+            # Sin reemplazo y con ventas históricas: se conserva para no romper el historial.
+            continue
         for usuario in list(viejo.usuarios):
             if nuevo and nuevo not in usuario.roles:
                 usuario.roles.append(nuevo)
@@ -380,14 +388,15 @@ def _seed_usuarios_demo():
     # Administrador demo (admin@coolbox.com.pe / Admin123!)
     _crear_usuario_demo("00000001", "Administrador", "Sistema", "Coolbox", "Admin123!",
                         [rol.get("administrador")], email="admin@coolbox.com.pe")
-    # Vendedor demo con dos roles: al ingresar debe elegir con cuál trabajar
+    # Vendedor demo: vende y cobra en su propia caja
     # (jperezl@coolbox.com.pe / Vendedor123!)
     _crear_usuario_demo("70123456", "Juan Daniel", "Perez", "Lozano", "Vendedor123!",
-                        [rol.get("vendedor"), rol.get("almacenero")])
-    # Supervisor de ventas demo: único rol de tienda que anula ventas
+                        [rol.get("vendedor")])
+    # Supervisor de ventas demo con dos roles: al ingresar elige con cuál trabajar.
+    # Como Supervisor es el único rol de tienda que anula ventas.
     # (mtorresr@coolbox.com.pe / Supervisor123!)
     _crear_usuario_demo("70987654", "Maria Elena", "Torres", "Rojas", "Supervisor123!",
-                        [rol.get("supervisor")])
+                        [rol.get("supervisor"), rol.get("vendedor")])
     db.session.commit()
 
 
