@@ -83,6 +83,26 @@ def resumen():
             if det.producto:
                 pp.update(nombre=det.producto.nombre, sku=det.producto.sku, imagen_url=det.producto.imagen_url)
 
+    # Cuadre de cajas por vendedor (turnos abiertos en el rango)
+    from ..models import Caja
+    cajas = Caja.query.filter(Caja.fecha_apertura >= inicio, Caja.fecha_apertura < fin).all()
+    cuadre = defaultdict(lambda: {"nombre": "", "cajas": 0, "abiertas": 0, "cuadradas": 0,
+                                  "sobrante": Decimal("0"), "faltante": Decimal("0")})
+    for c in cajas:
+        fila = cuadre[c.usuario_id]
+        fila["nombre"] = c.usuario.nombre_completo if c.usuario else "—"
+        fila["cajas"] += 1
+        if c.estado == "abierta":
+            fila["abiertas"] += 1
+            continue
+        dif = Decimal(c.diferencia or 0)
+        if dif == 0:
+            fila["cuadradas"] += 1
+        elif dif > 0:
+            fila["sobrante"] += dif
+        else:
+            fila["faltante"] += -dif
+
     def ordenar(dic, clave="total"):
         return sorted(dic.items(), key=lambda kv: kv[1][clave], reverse=True)
 
@@ -102,12 +122,18 @@ def resumen():
             "monto_anulado": float(sum((Decimal(v.total) for v in anuladas), Decimal("0"))),
             "ticket_promedio": float((total / len(completadas)).quantize(Decimal("0.01"))) if completadas else 0.0,
             "unidades_vendidas": unidades,
+            "cajas": len(cajas),
+            "cajas_abiertas": sum(1 for c in cajas if c.estado == "abierta"),
+            "cajas_con_diferencia": sum(1 for c in cajas if c.estado == "cerrada" and Decimal(c.diferencia or 0) != 0),
         },
         por_dia=serie_dias,
         por_metodo=[{"metodo": k, "total": float(x["total"]), "ventas": x["ventas"]} for k, x in ordenar(por_metodo)],
         por_vendedor=[{"usuario_id": k, "nombre": x["nombre"], "total": float(x["total"]), "ventas": x["ventas"]}
                       for k, x in ordenar(por_vendedor)],
         por_familia=[{"familia": k, "total": float(x["total"]), "unidades": x["unidades"]} for k, x in ordenar(por_familia)],
+        cuadre_cajas=[{"usuario_id": k, "nombre": x["nombre"], "cajas": x["cajas"], "abiertas": x["abiertas"],
+                       "cuadradas": x["cuadradas"], "sobrante": float(x["sobrante"]), "faltante": float(x["faltante"])}
+                      for k, x in sorted(cuadre.items(), key=lambda kv: kv[1]["faltante"], reverse=True)],
         top_productos=[{"producto_id": k, "nombre": x["nombre"], "sku": x["sku"], "imagen_url": x["imagen_url"],
                         "unidades": x["unidades"], "total": float(x["total"])}
                        for k, x in ordenar(por_producto, "unidades")[:10]],

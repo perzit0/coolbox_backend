@@ -133,3 +133,30 @@ productos por reponer.
 
 **Migración automática**: al arrancar se agregan las columnas/tablas nuevas
 sobre la BD existente de Supabase (no hay que tocar nada a mano).
+
+## Novedades v3.0 — Módulo de Ventas y Caja
+
+El sistema se concentra en la venta en tienda y el control de caja. Roles: **Administrador**, **Vendedor** (vende y cobra en su caja) y **Supervisor de Ventas** (controla cajas y anula ventas). Se retiró el rol Almacenero.
+
+**Reglas de caja**
+- El vendedor abre su caja con un fondo inicial en efectivo (S/ 0.00 a S/ 5,000.00). Solo puede tener una caja abierta.
+- Sin caja abierta no se registran ventas; cada venta queda ligada a la caja que la cobró.
+- Una caja de un día anterior no recibe ventas hasta cerrarse.
+- Cierre con arqueo: se cuentan billetes y monedas; `diferencia = contado − esperado`, donde `esperado = fondo inicial + ventas en efectivo` (las anuladas no suman). Si hay sobrante o faltante, la observación es obligatoria.
+- Una venta solo se anula (Supervisor o Administrador) mientras su caja siga abierta.
+
+**Endpoints de caja**
+| Método | Ruta | Permiso |
+|---|---|---|
+| GET | `/api/cajas/mi-caja` | caja.operar |
+| POST | `/api/cajas/abrir` | caja.operar |
+| POST | `/api/cajas/cerrar` | caja.operar |
+| GET | `/api/cajas/mis-cajas` | caja.operar |
+| GET | `/api/cajas/<id>` | dueño de la caja o caja.supervisar |
+| GET | `/api/cajas` | caja.supervisar |
+
+**Correcciones**
+- Dos cajas registrando ventas a la vez ya no provocan error 500 (código provisional único).
+- La anulación bloquea la venta: el stock no se devuelve dos veces.
+- El login no revela qué correos existen y no cuenta intentos en cuentas desactivadas o bloqueadas.
+- `POST /api/auth/liberar-rol`: "Cambiar rol" invalida el rol anterior.
