@@ -332,7 +332,7 @@ class Caja(db.Model):
 
 class Venta(db.Model):
     __tablename__ = "venta"
-    METODOS_PAGO = ("efectivo", "tarjeta", "yape", "plin", "transferencia")
+    METODOS_PAGO = ("efectivo", "tarjeta", "yape", "plin")
 
     id = db.Column(db.Integer, primary_key=True)
     codigo = db.Column(db.String(20), nullable=False, unique=True)  # V-000001

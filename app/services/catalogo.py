@@ -94,6 +94,8 @@ MARCAS = [
     ("16", "Teros"),
     ("17", "Coolbox Teraware"),
     ("18", "Microsoft"),
+    ("19", "Nintendo"),
+    ("20", "Dell"),
 ]
 
 # Nombres de categorías de versiones anteriores -> código de familia nuevo
