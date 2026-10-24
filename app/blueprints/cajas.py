@@ -5,6 +5,7 @@
     POST /api/cajas/cerrar     -> cierra la caja con el arqueo (conteo de efectivo)
     GET  /api/cajas/mis-cajas  -> últimos turnos del usuario
     GET  /api/cajas/<id>       -> detalle de un turno (reporte de cierre)
+    GET  /api/cajas            -> control de cajas para el supervisor (filtros por fecha/estado/vendedor)
 """
 import json
 from decimal import Decimal, InvalidOperation
@@ -136,3 +137,38 @@ def detalle_caja(caja_id):
     if not caja or not _puede_ver_caja(caja):
         raise ApiError("caja_no_encontrada", "La caja no existe o no tiene acceso a ella.", 404)
     return jsonify(caja=caja_con_resumen(caja, include_ventas=True))
+
+
+@bp.get("/cajas")
+@jwt_required()
+def control_cajas():
+    """Cajas de todos los vendedores. Parámetros: desde, hasta (AAAA-MM-DD), estado, usuario_id."""
+    require_permiso("caja.supervisar")
+    from .ventas import rango_fechas
+    inicio, fin = rango_fechas(request.args.get("desde"), request.args.get("hasta"))
+    query = Caja.query
+    if inicio:
+        query = query.filter(Caja.fecha_apertura >= inicio)
+    if fin:
+        query = query.filter(Caja.fecha_apertura < fin)
+    estado = request.args.get("estado")
+    if estado in ("abierta", "cerrada"):
+        query = query.filter(Caja.estado == estado)
+    usuario_id = request.args.get("usuario_id", type=int)
+    if usuario_id:
+        query = query.filter(Caja.usuario_id == usuario_id)
+    cajas = query.order_by(Caja.fecha_apertura.desc()).limit(200).all()
+    data = [caja_con_resumen(c) for c in cajas]
+
+    cerradas = [c for c in data if c["estado"] == "cerrada"]
+    indicadores = {
+        "abiertas": sum(1 for c in data if c["estado"] == "abierta"),
+        "cerradas": len(cerradas),
+        "total_vendido": round(sum(c["resumen"]["total_vendido"] for c in data), 2),
+        "sobrantes": round(sum(c["diferencia"] for c in cerradas if c["diferencia"] > 0), 2),
+        "faltantes": round(sum(-c["diferencia"] for c in cerradas if c["diferencia"] < 0), 2),
+        "con_diferencia": sum(1 for c in cerradas if c["diferencia"] != 0),
+    }
+    vendedores = sorted({(c["usuario_id"], c["usuario_nombre"]) for c in data}, key=lambda x: x[1] or "")
+    return jsonify(cajas=data, indicadores=indicadores,
+                   vendedores=[{"id": i, "nombre": n} for i, n in vendedores])

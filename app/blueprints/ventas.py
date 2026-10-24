@@ -202,6 +202,11 @@ def anular_venta(venta_id):
         raise ApiError("venta_no_encontrada", "La venta no existe.", 404)
     if venta.estado == "anulada":
         raise ApiError("venta_anulada", "La venta ya se encuentra anulada.", 409)
+    # Solo se anula mientras la caja del turno siga abierta: después del arqueo
+    # el dinero ya se entregó y el caso se trata como devolución.
+    if venta.caja and venta.caja.estado == "cerrada":
+        raise ApiError("caja_cerrada",
+                       f"La caja {venta.caja.codigo} ya fue cerrada; la venta no puede anularse.", 409)
     motivo = ((request.get_json(silent=True) or {}).get("motivo") or "").strip()
     if len(motivo) < 10:
         raise ApiError("motivo_requerido", "Indique el motivo de la anulación (mínimo 10 caracteres).", 400)

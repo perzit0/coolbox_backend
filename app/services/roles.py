@@ -21,6 +21,7 @@ PERMISOS = [
     ("ventas.anular", "Anular una venta ya emitida"),
     ("reportes.ver", "Consultar reportes de operación"),
     ("caja.operar", "Abrir y cerrar su propia caja (turno de ventas)"),
+    ("caja.supervisar", "Controlar las cajas de todos los vendedores y sus arqueos"),
 ]
 
 # Roles que existieron en versiones anteriores y deben retirarse de la BD.
@@ -45,7 +46,7 @@ ROLES = [
             "kardex.ver",
             "ventas.crear", "ventas.ver", "ventas.anular",
             "reportes.ver",
-            "caja.operar",
+            "caja.operar", "caja.supervisar",
         ],
     },
     {
@@ -59,8 +60,8 @@ ROLES = [
     {
         "codigo": "supervisor",
         "nombre": "Supervisor de Ventas",
-        "descripcion": "Supervisa las ventas de tienda, revisa reportes y es el único rol de tienda que puede anular ventas.",
+        "descripcion": "Supervisa las ventas y las cajas de la tienda, revisa los arqueos y es el único rol de tienda que puede anular ventas.",
         "es_admin": False,
-        "permisos": ["productos.ver", "kardex.ver", "ventas.ver", "ventas.anular", "reportes.ver"],
+        "permisos": ["productos.ver", "kardex.ver", "ventas.ver", "ventas.anular", "reportes.ver", "caja.supervisar"],
     },
 ]

@@ -383,6 +383,7 @@ class Venta(db.Model):
             "cantidad_items": sum(d.cantidad for d in self.detalles),
             "caja_id": self.caja_id,
             "caja_codigo": self.caja.codigo if self.caja else None,
+            "caja_estado": self.caja.estado if self.caja else None,
         }
         if include_detalles:
             data["detalles"] = [d.to_dict() for d in self.detalles]
