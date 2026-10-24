@@ -41,6 +41,7 @@ def _columnas_nuevas(dialecto):
             "anulada_por_id": "INTEGER",
             "fecha_anulacion": t["fecha"],
             "motivo_anulacion": "VARCHAR(240)",
+            "caja_id": "INTEGER",
         },
     }
 

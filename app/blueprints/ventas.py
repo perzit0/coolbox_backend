@@ -1,6 +1,7 @@
 """Registro de ventas en tienda.
 
 El código de venta se genera de forma correlativa (V-000001) al confirmarla.
+Toda venta se registra en la caja abierta del vendedor que la cobra.
 Al registrar la venta se descuenta stock; al anularla se devuelve stock.
 Ambos movimientos quedan en el kardex.
 """
@@ -14,6 +15,7 @@ from flask_jwt_extended import jwt_required
 from ..errors import ApiError
 from ..extensions import db
 from ..models import Producto, Usuario, Venta, VentaDetalle, ahora
+from ..services.caja import exigir_caja_abierta
 from ..services.inventario import mover_stock
 from .auth import _usuario_actual, require_permiso
 
@@ -106,6 +108,8 @@ def obtener_venta(venta_id):
 def crear_venta():
     rol = require_permiso("ventas.crear")
     usuario = _usuario_actual()
+    # Toda venta se cobra en la caja abierta del vendedor (RN: sin caja abierta no se vende).
+    caja = exigir_caja_abierta(usuario)
     data = request.get_json(silent=True) or {}
 
     items = data.get("items") or []
@@ -172,7 +176,7 @@ def crear_venta():
         # sin chocar con la restricción UNIQUE antes de asignar el correlativo.
         codigo=f"TMP-{uuid4().hex[:16]}", usuario_id=usuario.id, rol_id=rol.id, cliente_nombre=cliente_nombre,
         metodo_pago=metodo_pago, subtotal=base, igv=igv, total=total,
-        monto_recibido=monto_recibido, vuelto=vuelto, estado="completada",
+        monto_recibido=monto_recibido, vuelto=vuelto, estado="completada", caja_id=caja.id,
     )
     db.session.add(venta)
     db.session.flush()

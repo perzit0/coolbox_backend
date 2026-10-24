@@ -76,8 +76,9 @@ def create_app(config_object="config.Config"):
     from .blueprints.productos import bp as productos_bp
     from .blueprints.ventas import bp as ventas_bp
     from .blueprints.reportes import bp as reportes_bp
+    from .blueprints.cajas import bp as cajas_bp
 
-    for blueprint in (auth_bp, usuarios_bp, roles_bp, productos_bp, ventas_bp, reportes_bp):
+    for blueprint in (auth_bp, usuarios_bp, roles_bp, productos_bp, ventas_bp, reportes_bp, cajas_bp):
         app.register_blueprint(blueprint, url_prefix="/api")
 
     # Auto-seed en el primer arranque (útil para Render + Supabase, ya que
@@ -97,7 +98,7 @@ def create_app(config_object="config.Config"):
 
     @app.get("/")
     def root():
-        return {"servicio": "coolbox-backend", "version": "2.0.0", "estado": "ok", "docs": "/health"}
+        return {"servicio": "coolbox-backend", "version": "3.0.0", "estado": "ok", "docs": "/health"}
 
     @app.get("/health")
     def health():

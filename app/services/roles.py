@@ -20,6 +20,7 @@ PERMISOS = [
     ("ventas.ver", "Consultar el historial de ventas"),
     ("ventas.anular", "Anular una venta ya emitida"),
     ("reportes.ver", "Consultar reportes de operación"),
+    ("caja.operar", "Abrir y cerrar su propia caja (turno de ventas)"),
 ]
 
 # Roles que existieron en versiones anteriores y deben retirarse de la BD.
@@ -44,6 +45,7 @@ ROLES = [
             "kardex.ver",
             "ventas.crear", "ventas.ver", "ventas.anular",
             "reportes.ver",
+            "caja.operar",
         ],
     },
     {
@@ -52,7 +54,7 @@ ROLES = [
         "descripcion": "Atiende al cliente en tienda, registra la venta, cobra y entrega el comprobante.",
         "es_admin": False,
         # Sin "ventas.anular": solo el Supervisor (y el Administrador) anulan ventas.
-        "permisos": ["productos.ver", "ventas.crear", "ventas.ver"],
+        "permisos": ["productos.ver", "ventas.crear", "ventas.ver", "caja.operar"],
     },
     {
         "codigo": "supervisor",

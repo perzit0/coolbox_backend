@@ -285,6 +285,51 @@ class MovimientoStock(db.Model):
         }
 
 
+class Caja(db.Model):
+    """Turno de caja de un vendedor.
+
+    El vendedor abre su caja con un fondo inicial en efectivo, registra sus
+    ventas en ella y al terminar el turno la cierra con un arqueo: cuenta el
+    efectivo y el sistema calcula la diferencia contra lo esperado.
+    """
+    __tablename__ = "caja"
+
+    id = db.Column(db.Integer, primary_key=True)
+    codigo = db.Column(db.String(20), nullable=False, unique=True)  # C-000001
+    usuario_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False, index=True)
+    estado = db.Column(db.String(10), nullable=False, default="abierta")  # abierta | cerrada
+    fecha_apertura = db.Column(db.DateTime(timezone=True), nullable=False, default=ahora)
+    monto_apertura = db.Column(db.Numeric(10, 2), nullable=False, default=0)
+    # Arqueo (se completa al cerrar)
+    fecha_cierre = db.Column(db.DateTime(timezone=True))
+    efectivo_esperado = db.Column(db.Numeric(10, 2))
+    efectivo_contado = db.Column(db.Numeric(10, 2))
+    diferencia = db.Column(db.Numeric(10, 2))
+    conteo_json = db.Column(db.Text)  # {"200": 1, "100": 3, ...} denominaciones contadas
+    observacion_cierre = db.Column(db.String(240))
+
+    usuario = relationship("Usuario")
+    ventas = relationship("Venta", back_populates="caja", order_by="Venta.id")
+
+    def to_dict(self):
+        def num(v):
+            return float(v) if v is not None else None
+        return {
+            "id": self.id,
+            "codigo": self.codigo,
+            "usuario_id": self.usuario_id,
+            "usuario_nombre": self.usuario.nombre_completo if self.usuario else None,
+            "estado": self.estado,
+            "fecha_apertura": iso(self.fecha_apertura),
+            "monto_apertura": num(self.monto_apertura),
+            "fecha_cierre": iso(self.fecha_cierre),
+            "efectivo_esperado": num(self.efectivo_esperado),
+            "efectivo_contado": num(self.efectivo_contado),
+            "diferencia": num(self.diferencia),
+            "observacion_cierre": self.observacion_cierre,
+        }
+
+
 class Venta(db.Model):
     __tablename__ = "venta"
     METODOS_PAGO = ("efectivo", "tarjeta", "yape", "plin", "transferencia")
@@ -307,7 +352,10 @@ class Venta(db.Model):
     anulada_por_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="SET NULL"))
     fecha_anulacion = db.Column(db.DateTime(timezone=True))
     motivo_anulacion = db.Column(db.String(240))
+    # Caja (turno) en la que se cobró la venta
+    caja_id = db.Column(db.Integer, ForeignKey("caja.id", ondelete="SET NULL"), index=True)
 
+    caja = relationship("Caja", back_populates="ventas")
     usuario = relationship("Usuario", foreign_keys=[usuario_id])
     anulada_por = relationship("Usuario", foreign_keys=[anulada_por_id])
     rol = relationship("Rol")
@@ -333,6 +381,8 @@ class Venta(db.Model):
             "fecha_anulacion": iso(self.fecha_anulacion),
             "motivo_anulacion": self.motivo_anulacion,
             "cantidad_items": sum(d.cantidad for d in self.detalles),
+            "caja_id": self.caja_id,
+            "caja_codigo": self.caja.codigo if self.caja else None,
         }
         if include_detalles:
             data["detalles"] = [d.to_dict() for d in self.detalles]
