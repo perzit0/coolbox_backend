@@ -176,3 +176,19 @@ El sistema se concentra en la venta en tienda y el control de caja. Roles: **Adm
 - La anulación bloquea la venta: el stock no se devuelve dos veces.
 - El login no revela qué correos existen y no cuenta intentos en cuentas desactivadas o bloqueadas.
 - `POST /api/auth/liberar-rol`: "Cambiar rol" invalida el rol anterior.
+
+## Novedades v4.0 — Tienda online y promociones
+- **Tienda online** (`/api/tienda/*`, repositorio `coolbox_tienda`): catálogo público con SKU,
+  inicio con promociones destacadas, venta cruzada, carrito con cupones y pedidos con recojo en
+  tienda (26 sedes de Lima, la más cercana primero).
+- **Clientes** (`/api/clientes/*`): registro con cualquier correo, inicio con Google
+  (`GOOGLE_CLIENT_ID`) y código por correo (`SMTP_*`), ambos opcionales. Su token no sirve en el
+  sistema de caja.
+- **Promociones** (`/api/promociones`, solo Administrador): porcentaje, monto, precio especial,
+  2x1/3x2/3x1/4x3, segunda unidad, por cantidad y cupón; por productos, marca, familia o todo;
+  canal online, cajas o ambos; con fecha de inicio y fin. Se aplica la que más ahorra (no se acumulan).
+  Las cajas también las aplican (`POST /api/ventas/cotizar`).
+- **Pedidos online** (`/api/pedidos-online`): el personal confirma pagos de PagoEfectivo, marca
+  pedidos listos, entrega validando el documento del titular o cancela (el stock vuelve).
+- Pagos con tarjeta registran la marca: Visa, Mastercard, American Express o Diners Club.
+- Catálogo ampliado a 145 productos (impresoras, Starlink, smart home, cargadores...).

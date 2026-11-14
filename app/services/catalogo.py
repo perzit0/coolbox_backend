@@ -35,6 +35,12 @@ FAMILIAS = [
         ("02", "Laptops gamer"),
         ("03", "Ultradelgadas y premium"),
     ]),
+    # Familia intermedia (por eso las familias avanzan de 10 en 10)
+    ("15", "Impresoras y Conectividad", "Impresoras, antenas satelitales y redes Wi-Fi", [
+        ("01", "Impresoras de tinta continua"),
+        ("02", "Impresoras láser"),
+        ("03", "Internet satelital y Wi-Fi"),
+    ]),
     ("20", "Celulares", "Smartphones de todas las gamas", [
         ("01", "Gama de entrada"),
         ("02", "Gama media"),
@@ -72,6 +78,12 @@ FAMILIAS = [
         ("02", "Teclados"),
         ("03", "Monitores"),
         ("04", "Headsets"),
+        ("05", "Cargadores y baterías externas"),
+    ]),
+    ("90", "Hogar y Smart Home", "Parlantes inteligentes, seguridad y climatización", [
+        ("01", "Smart Home"),
+        ("02", "Cámaras de seguridad"),
+        ("03", "Climatización"),
     ]),
 ]
 
@@ -96,6 +108,14 @@ MARCAS = [
     ("18", "Microsoft"),
     ("19", "Nintendo"),
     ("20", "Dell"),
+    ("21", "Epson"),
+    ("22", "Brother"),
+    ("23", "Starlink"),
+    ("24", "Amazon"),
+    ("25", "Tapo"),
+    ("26", "Midea"),
+    ("27", "Baseus"),
+    ("28", "TP-Link"),
 ]
 
 # Nombres de categorías de versiones anteriores -> código de familia nuevo

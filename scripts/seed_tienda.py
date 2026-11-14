@@ -1,0 +1,177 @@
+"""Datos de la tienda online: productos con buena demanda, sedes de recojo y promociones demo.
+
+- 50 productos reales de coolbox.pe (noviembre 2026): impresoras, Starlink,
+  Switch 2, iPhone 16, Motorola G47, Echo Dot, Tapo, aires acondicionados...
+  El precio del sistema es el precio regular ("Antes"); el precio rebajado que
+  publica Coolbox se carga como promoción de PRECIO_ESPECIAL.
+- 26 sedes reales de Coolbox en Lima con sus coordenadas, para el recojo en tienda.
+- Promociones demo de cada tipo, auspiciadas por marcas (como los carteles de supermercado).
+Todo es idempotente: si ya existe (por código o nombre), no se duplica.
+"""
+from datetime import timedelta
+
+from app.extensions import db
+from app.models import Familia, Marca, Producto, Promocion, PromocionProducto, Sede, ahora
+
+# (familia, subfamilia, marca, codigo_ref, nombre, precio_regular, stock, imagen, precio_oferta)
+PRODUCTOS_NUEVOS = [
+    # 15 Impresoras y conectividad
+    ("15", "01", "Epson", "C11CL41301", "Impresora multifuncional Epson EcoTank L4360, inyección de tinta, inalámbrica, Wi-Fi, con tanques recargables", 1149.00, 14, "535918/Impresora-multifuncional-Epson-Ecotank-L4360_1.jpg?v=639102168819300000", 899.00),
+    ("15", "01", "Epson", "C11CL43301", "Impresora multifuncional Epson EcoTank L6370, inyección de tinta, inalámbrica, Wi-Fi, tanques recargables, dúplex automático", 1789.00, 8, "535899/Impresora-multifuncional-Epson-Ecotank-L6370-Wi-Fi_11.jpg?v=639102161683500000", 1499.00),
+    ("15", "01", "Epson", "AMC11CK57", "Impresora multifuncional Epson EcoTank L5590, inyección de tinta, inalámbrica, Wi-Fi, con tanques recargables + 4 botellas de tinta", 1249.00, 10, "357737/EcoTank-L5590-tintas_1.jpg?v=638479528537670000", 1059.00),
+    ("15", "01", "Brother", "DCPT730DW", "Impresora multifuncional Brother DCP-T730DW, tinta, WiFi, tanques recargables", 1149.00, 12, "535938/DCPT730DW_1.jpg?v=639102195656600000", 879.00),
+    ("15", "01", "Brother", "DCPT230", "Impresora multifuncional Brother DCP-T230, inyección de tinta, alámbrico, con tanque recargable", 859.00, 15, "535953/DCPT230_4.jpg?v=639102208645670000", 579.00),
+    ("15", "01", "Brother", "DCPT430W", "Impresora multifuncional Brother DCP-T430W, inyección de tinta, inalámbrica, Wi-Fi, con tanque recargable", 899.00, 12, "535948/DCPT430W_4.jpg?v=639102205802000000", 649.00),
+    ("15", "01", "HP", "1F3Y2A", "Impresora multifuncional HP Smart Tank 580, inyección de tinta, inalámbrica, Wi-Fi, con tanques recargables", 680.00, 16, "269308/image-660d5d7451f4451c95c0006e0b2516a0.jpg?v=639093546869200000", 479.00),
+    ("15", "02", "Brother", "INL3560CDW", "Impresora Brother láser color DCP-L3560CDW, Wi-Fi, ethernet, blanco", 2100.00, 5, "420899/image-fe3b62caa9614efc880fcc1cc6c81655.jpg?v=638744703616730000", 1848.00),
+    ("15", "03", "Starlink", "100022526", "Kit de internet satelital Starlink Mini X Wi-Fi 5, hasta 128 dispositivos, blanco", 749.00, 25, "586616/100022526-6.jpg?v=639280266308200000", 279.00),
+    ("15", "03", "Starlink", "100019053", "Kit de internet satelital Starlink Estándar V4 Wi-Fi 6, hasta 235 dispositivos, blanco", 1649.00, 10, "514570/100019053-2.jpg?v=639179226223900000", 999.00),
+    ("15", "03", "TP-Link", "IF0011474", "Sistema Wi-Fi Mesh TP-Link Deco X50 (3-pack), AX3000 Mbps, doble banda 2.4/5 GHz, 3 puertos Gigabit por unidad", 1900.00, 6, "546916/image-bfdcacd309ad433e9f119c1dfdaaec14.jpg?v=639161863862670000", 1080.00),
+    # 20 Celulares
+    ("20", "02", "Motorola", "PBCG0058PE", "Celular Motorola G47 5G, 128GB, 4GB RAM, cámara 50MP, gris", 999.00, 30, "588095/PBCG0058PE_1.jpg?v=639289714037970000", 499.00),
+    ("20", "02", "Motorola", "PBCG0059PE", "Celular Motorola G47 5G, 128GB, 4GB RAM, cámara 50MP, azul", 999.00, 30, "588105/PBCG0059PE_1.jpg?v=639283886027630000", 499.00),
+    ("20", "02", "Samsung", "SMSGLXA37256HP", 'Celular Samsung Galaxy A37 5G 256GB, 8GB RAM, cámara trasera 50MP, frontal 12MP, pantalla 6.7", negro', 1759.00, 14, "554262/image-20841f1a252843c59d8a927274362018.jpg?v=639186288605270000", 1339.00),
+    ("20", "03", "Samsung", "SM-A576BDBNLTP", "Celular Samsung Galaxy A57 5G 256GB, 8GB RAM, cámara trasera 50MP y frontal 12MP, 6.7'', azul oscuro", 2249.00, 10, "563645/celular-samsung-galaxy-a57-5g-256gb-8gb-ram-azul-oscuro-frontal-dorsal.jpg?v=639222551945400000", None),
+    ("20", "02", "Xiaomi", "PS15993207", "Xiaomi Redmi Note 17 4G, 256GB, 6GB RAM, cámara posterior de 50MP y frontal de 16MP, negro", 1509.00, 18, "580757/image-3044de65d704424da6c8aa2318fbb572.jpg?v=639262995731600000", 1159.00),
+    ("20", "03", "Apple", "MYE73BE-A", 'Apple iPhone 16 128GB, 8GB RAM, pantalla 6.1", eSIM, 5G, negro', 3999.00, 10, "412975/MYE73BE-A_1.jpg?v=639275075904570000", None),
+    ("20", "03", "Apple", "PS22612121", 'iPhone 16 Pro Max 5G 256GB, 8GB RAM, cámara trasera 48MP y frontal 12MP, 6.9", Black Titanium', 6629.00, 4, "412789/iPhone-16-Pro-Max-negro_1.jpg.jpg?v=638726489924300000", 5099.00),
+    # 30 Tablets
+    ("30", "01", "Samsung", "SM-X133NZAAPEO", 'Tablet Samsung Galaxy Tab A11 8.7" 64GB, 4GB RAM, cámara principal 8MP y frontal 5MP, 5100 mAh, gris', 599.00, 15, "508901/SM-X133NZAAPEO_1.jpg?v=639014311280100000", 499.00),
+    ("30", "01", "Samsung", "TABS10FEG-T", 'Tablet Samsung Galaxy Tab S10 FE 10.9", 128GB, 8GB RAM, Exynos 1580, 8000 mAh, gris + S Pen', 2199.00, 7, "588513/TABS10FEG-T-1.jpg?v=639287135345600000", 1665.00),
+    ("30", "01", "Apple", "OGAIR11M5", 'iPad Air M4 11" 128GB, 12GB RAM, cámara principal 12MP y frontal 12MP, starlight', 3999.00, 6, "590113/OGAIR11M5-2.jpg?v=639291958826270000", 2999.00),
+    # 10 Laptops
+    ("10", "03", "Apple", "MXM5AI13MT", 'MacBook Air M5 13" 512GB SSD, 16GB RAM, macOS, lector de huellas, midnight', 6499.00, 5, "590074/MXM5AI13MT-4.jpg?v=639291910011530000", 4999.00),
+    ("10", "01", "Asus", "PS41019179", 'Laptop Asus Vivobook 16" Intel Core i7-1355U, 512GB SSD, 16GB RAM, Win11 Home, negro', 4419.00, 6, "554183/Laptop-Asus-Vivobook-16-i7-512GB-16GB-Negro-frontal.jpg?v=639186131772730000", 3399.00),
+    # 50 Audio
+    ("50", "03", "JBL", "JBLFLIP7AZUL-OF", "Parlante bluetooth portátil JBL Flip 7, 35W, IP68, batería 16 horas, JBL Auracast, azul", 899.00, 20, "453932/image-17ace300168c490c9c261dba3b8128a9.jpg?v=638836134672400000", 399.00),
+    ("50", "03", "JBL", "JBLPARTY720-OF", "Parlante de torre bluetooth JBL PartyBox 720, 800 W RMS, portátil, karaoke, 2 woofers, iluminación LED, negro", 5999.00, 3, "543846/image-ae86caee3d01428d90902811351d0d5c.jpg?v=639147089006170000", 2999.00),
+    ("50", "01", "Sony", "WH1000XM5-BMUC", "Audífonos Sony WH-1000XM5 Bluetooth, cancelación de ruido, hasta 30 horas, negro", 1599.00, 9, "277257/WH1000XM5-BMUC_1.jpg?v=639179998567730000", 899.00),
+    ("50", "01", "Sony", "WH-CH520-BZUC", "Audífonos Sony WH-CH520 on ear bluetooth hasta 50 horas con micrófono, negro", 219.00, 25, "277201/WH-CH520-BZUC_1.jpg?v=639180912837230000", 129.00),
+    ("50", "01", "JBL", "JBLT780NCN-T", "Audífonos Bluetooth JBL Tune 780NC Over-Ear, ANC, JBL Pure Bass, multipunto, hasta 70h, negro", 599.00, 15, "548585/297.png?v=639168156510430000", 239.00),
+    # 60 Smartwatch
+    ("60", "01", "Apple", "PM-24072026", "Apple Watch SE 2da generación, Retina LTPO OLED 40 mm, hasta 18 horas, correa Sport Loop S/M, midnight", 1999.00, 10, "562236/88.png?v=639217453179830000", 1149.00),
+    ("60", "01", "Apple", "ISAPS1142MM3", "Apple Watch Serie 11 42mm OLED, GPS, Wi-Fi, batería hasta 24 horas, Sport Band M/L, negro", 2299.00, 6, "506707/Relojesnegros.jpg?v=639009878335400000", 1579.00),
+    ("60", "01", "Samsung", "SM-L350NZKALTA", "Smartwatch Samsung Galaxy Watch 9 44 mm, AMOLED 1.5 pulgadas, bluetooth, 5 ATM, hasta 40 h, negro", 1699.00, 8, "582046/SM-L350NZKALTA-F1.jpg?v=639265549922870000", None),
+    ("60", "02", "Huawei", "55020GUS", "Smartband Huawei Band 11 pantalla 1.62'' AMOLED, resistencia al agua 5ATM, batería hasta 14 días, negro", 199.00, 20, "532906/smartband-huawei-band-11-pantalla-1-62-amoled-5atm-negro-55020gus_5.jpg?v=639083471486600000", None),
+    # 70 Gamer
+    ("70", "01", "Nintendo", "TWVS4001063-L", 'Consola Nintendo Switch 2 256 GB, pantalla 7.9" Full HD, Joy-Con 2, GameChat integrado', 2499.00, 12, "533472/dsadsadaswe.jpg?v=639289941918130000", 2099.00),
+    ("70", "01", "Nintendo", "TWVS4001152-L", "Consola Nintendo Switch 2 Choose Your Game Bundle, Full HD, 256GB, 12GB RAM, negro", 2499.00, 8, "555886/image-a10a19685eb54aa8ad0644981f617bcd.jpg?v=639192265822330000", 2299.00),
+    ("70", "01", "Nintendo", "TWS70001", "Consola Nintendo Switch OLED 64GB, rojo/azul neón", 1799.00, 6, "329015/Nintendo-Switch-Oled_1.jpg?v=638360987022930000", 1499.00),
+    ("70", "01", "Sony", "TWVS4000762-L", "Consola PlayStation 5 Slim 1TB con lector de discos, DualSense, versión LATAM", 3499.00, 7, "470842/actualizado--10-.jpg?v=638878527302300000", 3099.00),
+    # 80 Accesorios de cómputo
+    ("80", "01", "Logitech", "910-004940", "Mouse inalámbrico Logitech M170 USB 2.4GHz, 1000 DPI, 3 botones, negro", 49.90, 40, "523224/910-004940.jpg?v=639258853051030000", None),
+    ("80", "01", "Logitech", "910-005281", "Mouse gamer Logitech G305 Lightspeed inalámbrico 12000 DPI 6 botones, negro", 179.00, 20, "521649/Mouse-gamer-Logitech-G305-negro_1.jpg?v=639264826678300000", None),
+    ("80", "02", "Logitech", "920-010478", "Teclado Logitech MX Keys Mini Bluetooth, teclas retroiluminadas, recargable, rosado", 449.00, 10, "197812/920-010478_1.jpg?v=639262968730730000", 399.00),
+    ("80", "02", "Logitech", "920-010910", "Teclado inalámbrico Logitech Signature K650 Bluetooth, negro", 299.00, 12, "283915/920-010910_9.jpg?v=639128940708570000", 229.00),
+    ("80", "03", "Teros", "MON238FTE2415S", 'Monitor plano 23.8" Teros TE-2415 panel IPS, FHD (1920x1080), 120 Hz, 1ms, HDMI/DisplayPort', 359.00, 15, "517474/monitor-plano-23.8-teros-te-2415_1.jpg?v=639290042466200000", 269.00),
+    ("80", "03", "Asus", "VG279QE5A", 'Monitor plano ASUS TUF VG279QE5A 27", IPS, FHD, 146 Hz, 1 ms, DisplayPort 1.2, negro', 599.00, 8, "572409/430.png?v=639244139145970000", 469.00),
+    ("80", "05", "Baseus", "E0027701", "Batería externa Baseus Bipow 2 Pro 20000 mAh, 22.5W, con cable, entrada USB-C, negro", 159.00, 30, "526773/bateria-externa-baseus-bipow-2-pro-20000mah-22-5w-negro-e0027701.jpg?v=639185353210100000", None),
+    ("80", "05", "Xiaomi", "57865", "Batería externa Xiaomi 20000 mAh, 33W, 3 puertos, USB tipo-C, con cable integrado, beige", 159.00, 25, "537530/Bateria-externa-Xiaomi-20000mAh-33W-3-puertos-beige-frontal-oblicuo.jpg?v=639111800918070000", None),
+    ("80", "05", "Apple", "MWVV3AM-A", "Cargador de pared Apple USB tipo C, 1 puerto, 20W, blanco", 129.00, 40, "428157/image--2-.jpg.jpg?v=639264639895500000", None),
+    # 90 Hogar y Smart Home
+    ("90", "01", "Amazon", "B09B8V1LZ3", "Parlante inteligente Amazon Echo Dot 5ta generación con Alexa, Wi-Fi y Bluetooth, negro", 349.00, 25, "245161/B09B8V1LZ3_1.jpg?v=639123067268800000", 209.00),
+    ("90", "01", "Amazon", "B09B94RL1R", "Parlante inteligente Amazon Echo Dot 5ta generación, control de voz Alexa, Wi-Fi, bluetooth, blanco", 349.00, 20, "245173/B09B94RL1R_1.jpg?v=639123121693800000", 209.00),
+    ("90", "02", "Tapo", "TAPO-C200", "Cámara de seguridad Tapo C200 interior, 1080P, Wi-Fi, infrarrojo, rotativo, blanco", 129.00, 35, "258367/TAPO-C200_1.jpg?v=639262253089130000", 89.90),
+    ("90", "02", "Tapo", "TAPO-C220", "Cámara de seguridad Tapo 360°, Wi-Fi, resolución 4MP, visión nocturna, detección de movimiento, blanco", 169.00, 20, "532498/Camara-de-seguridad-Tapo-Wi-Fi-4MP-blanco-vista-frontal-camara-interior-inteligente.jpg?v=639082481372930000", 129.00),
+    ("90", "03", "Midea", "FC-AMP0001", "Aire acondicionado Midea Split de pared, 12000 BTU, convencional, frío solo, R410A", 2299.00, 6, "516458/iPhone-14-negro--22-.jpg?v=639035772466930000", 1449.00),
+    ("90", "03", "Midea", "FC-AMD0006", "Aire acondicionado Midea Split 24000 BTU Inverter frío solo, doble filtro Hi-Care y control Wi-Fi, blanco", 3779.00, 4, "501493/image-dcf509498276485893061a1f19664dc9.jpg?v=638985594268300000", 3349.00),
+]
+
+# (codigo, nombre, direccion, distrito, lat, lng, horario) — tiendas Coolbox en Lima
+SEDES = [
+    ("S01", "Coolbox Begonias", "Calle Las Begonias 730", "San Isidro", -12.09547, -77.02585, "9:00 a. m. - 9:00 p. m."),
+    ("S02", "Coolbox Real Plaza Salaverry", "Av. General Salaverry 2370", "Jesús María", -12.08997, -77.05227, "10:00 a. m. - 10:00 p. m."),
+    ("S03", "Coolbox Óvalo Gutiérrez", "Av. Comandante Espinar 864", "Miraflores", -12.11101, -77.03667, "9:00 a. m. - 9:00 p. m."),
+    ("S04", "Coolbox Av. Larco", "Av. José Larco 628", "Miraflores", -12.12330, -77.02938, "10:00 a. m. - 9:00 p. m."),
+    ("S05", "Coolbox La Rambla San Borja", "Av. Javier Prado Este 2050", "San Borja", -12.08865, -77.00472, "10:00 a. m. - 10:00 p. m."),
+    ("S06", "Coolbox Open Plaza Angamos", "Av. Angamos Este 1803", "Surquillo", -12.11159, -77.01187, "10:00 a. m. - 10:00 p. m."),
+    ("S07", "Coolbox Real Plaza Primavera", "Av. Angamos Este 2681", "San Borja", -12.11022, -77.00229, "10:00 a. m. - 10:00 p. m."),
+    ("S08", "Coolbox Jockey Plaza", "Av. Javier Prado Este 4200", "Santiago de Surco", -12.08709, -76.97623, "9:00 a. m. - 10:00 p. m."),
+    ("S09", "Coolbox El Polo", "Av. La Encalada 1415", "Santiago de Surco", -12.10151, -76.97085, "9:00 a. m. - 8:00 p. m."),
+    ("S10", "Coolbox La Molina", "Av. Raúl Ferrero 1205", "La Molina", -12.09180, -76.95203, "8:00 a. m. - 10:00 p. m."),
+    ("S11", "Coolbox Mall del Sur", "Av. Los Lirios 301", "San Juan de Miraflores", -12.15451, -76.98227, "10:00 a. m. - 10:00 p. m."),
+    ("S12", "Coolbox Open Plaza Atocongo", "Av. Circunvalación 1801", "San Juan de Miraflores", -12.14652, -76.98103, "10:00 a. m. - 10:00 p. m."),
+    ("S13", "Coolbox Real Plaza Puruchuco", "Av. Nicolás Ayllón 4770", "Ate", -12.03941, -76.93236, "10:00 a. m. - 10:00 p. m."),
+    ("S14", "Coolbox Real Plaza Santa Clara", "Av. Nicolás Ayllón 8694", "Ate", -12.01526, -76.88549, "10:00 a. m. - 10:00 p. m."),
+    ("S15", "Coolbox Megaplaza", "Av. Alfredo Mendiola 3698", "Independencia", -11.99394, -77.06144, "10:00 a. m. - 10:00 p. m."),
+    ("S16", "Coolbox Royal Plaza", "Av. Carlos Izaguirre 287", "San Martín de Porres", -11.99027, -77.06264, "10:00 a. m. - 10:00 p. m."),
+    ("S17", "Coolbox Metro Plaza Norte", "Av. Tomás Valle 15311", "Independencia", -12.00652, -77.06017, "9:00 a. m. - 10:00 p. m."),
+    ("S18", "Coolbox Real Plaza Pro", "Av. Alfredo Mendiola 7042", "San Martín de Porres", -11.94029, -77.07050, "10:00 a. m. - 10:00 p. m."),
+    ("S19", "Coolbox Mall Comas", "Av. Los Ángeles 602", "Comas", -11.93695, -77.06532, "10:00 a. m. - 10:00 p. m."),
+    ("S20", "Coolbox Minka", "Av. Argentina 3093", "Callao", -12.04677, -77.10175, "10:00 a. m. - 10:00 p. m."),
+    ("S21", "Coolbox Mall Aventura Bellavista", "Av. Óscar R. Benavides 3866", "Bellavista", -12.05583, -77.10229, "10:00 a. m. - 10:00 p. m."),
+    ("S22", "Coolbox La Rambla Brasil", "Av. Brasil 702", "Breña", -12.06618, -77.04677, "10:00 a. m. - 10:00 p. m."),
+    ("S23", "Coolbox Real Plaza Centro Cívico", "Av. Garcilaso de la Vega 1377", "Cercado de Lima", -12.05745, -77.03790, "10:00 a. m. - 10:00 p. m."),
+    ("S24", "Coolbox Metro Canadá", "Av. Canadá 1110", "La Victoria", -12.08424, -77.01383, "9:00 a. m. - 10:00 p. m."),
+    ("S25", "Coolbox Sodimac La Marina", "Av. de la Marina 2355", "San Miguel", -12.07983, -77.08846, "9:00 a. m. - 9:00 p. m."),
+    ("S26", "Coolbox Strip Fibra", "Av. De La Roca de Vergallo 318", "Magdalena del Mar", -12.09325, -77.05746, "10:00 a. m. - 10:00 p. m."),
+]
+
+
+def _seed_sedes():
+    for codigo, nombre, direccion, distrito, lat, lng, horario in SEDES:
+        sede = Sede.query.filter_by(codigo=codigo).first()
+        if not sede:
+            db.session.add(Sede(codigo=codigo, nombre=nombre, direccion=direccion, distrito=distrito,
+                                lat=lat, lng=lng, horario=horario))
+    db.session.commit()
+
+
+def _por_codigo(*codigos):
+    return [p for p in Producto.query.filter(Producto.codigo.in_(codigos)).all()]
+
+
+def _promo(nombre, tipo, dias, **kw):
+    """Crea la promoción demo solo si no existe una con el mismo nombre."""
+    if Promocion.query.filter_by(nombre=nombre).first():
+        return None
+    inicio = ahora() - timedelta(days=1)
+    productos = kw.pop("productos", [])
+    precios = kw.pop("precios", {})
+    p = Promocion(nombre=nombre, tipo=tipo, fecha_inicio=inicio, fecha_fin=inicio + timedelta(days=dias), activa=True, **kw)
+    db.session.add(p)
+    db.session.flush()
+    for prod in productos:
+        db.session.add(PromocionProducto(promocion_id=p.id, producto_id=prod.id, precio_especial=precios.get(prod.codigo)))
+    return p
+
+
+def _seed_promociones():
+    marcas = {m.nombre: m for m in Marca.query.all()}
+    familias = {f.codigo: f for f in Familia.query.all()}
+
+    # Precio especial: el precio rebajado que publica Coolbox para cada producto nuevo
+    ofertas = {codigo: oferta for (_, _, _, codigo, _, _, _, _, oferta) in PRODUCTOS_NUEVOS if oferta}
+    impresoras = [c for (f, s, _, c, *_r) in PRODUCTOS_NUEVOS if f == "15" and s in ("01", "02") and c in ofertas]
+    _promo("Impresoras: imprime más, gasta menos", "PRECIO_ESPECIAL", 7, destacada=True,
+           descripcion="Hasta 33 % de descuento en impresoras con tanque de tinta.", patrocinador="Epson y Brother",
+           productos=_por_codigo(*impresoras), precios={c: ofertas[c] for c in impresoras})
+    resto = [c for c in ofertas if c not in impresoras]
+    _promo("Ofertas bomba Coolbox", "PRECIO_ESPECIAL", 10, destacada=True,
+           descripcion="Precios especiales en celulares, consolas, audio y hogar.",
+           productos=_por_codigo(*resto), precios={c: ofertas[c] for c in resto})
+
+    # Promociones auspiciadas por marcas, de cada tipo
+    if marcas.get("Samsung"):
+        _promo("Semana Samsung", "PORCENTAJE", 6, valor=10, alcance="marca", marca_id=marcas["Samsung"].id,
+               patrocinador="Samsung", destacada=True, descripcion="10 % de descuento en todo Samsung.")
+    _promo("JBL: 2da unidad al 50 %", "SEGUNDA_UNIDAD", 14, valor=50, patrocinador="JBL",
+           productos=_por_codigo("JBLGO5BLKAM", "JBLT530BTBLKAM", "JBLFLIP7AZUL-OF"),
+           descripcion="Lleva dos parlantes o audífonos JBL y la segunda unidad sale a mitad de precio.")
+    _promo("Logitech 3x2 en accesorios", "NXM", 20, lleva=3, paga=2, patrocinador="Logitech",
+           productos=_por_codigo("910-004940", "910-005281"), descripcion="Lleva 3 mouse Logitech y paga 2.")
+    _promo("2x1 en cargadores Apple", "NXM", 5, lleva=2, paga=1, patrocinador="Apple",
+           productos=_por_codigo("MWVV3AM-A"), descripcion="Lleva 2 cargadores Apple de 20W y paga 1.")
+    _promo("Baterías externas: S/ 30 menos", "MONTO", 12, valor=30,
+           productos=_por_codigo("E0027701", "57865"), descripcion="S/ 30 de descuento en baterías externas de 20000 mAh.")
+    if familias.get("90"):
+        _promo("Hogar inteligente: desde 2 unidades -15 %", "VOLUMEN", 15, lleva=2, valor=15, alcance="familia",
+               familia_id=familias["90"].id, descripcion="Llevando 2 o más productos de Hogar y Smart Home, 15 % de descuento.")
+    _promo("Cupón de bienvenida", "CUPON", 30, valor=10, codigo_cupon="BIENVENIDO10", monto_minimo=200, canal="online",
+           alcance="todo", descripcion="10 % de descuento en tu primera compra online desde S/ 200.")
+    db.session.commit()
+
+
+def seed_tienda():
+    _seed_sedes()
+    _seed_promociones()

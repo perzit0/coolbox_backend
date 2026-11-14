@@ -49,6 +49,14 @@ def _columnas_nuevas(dialecto):
             "descuento": "NUMERIC(10, 2) NOT NULL DEFAULT 0",
             "autorizada_por_id": "INTEGER",
         },
+        "venta_detalle": {
+            "descuento": "NUMERIC(10, 2) NOT NULL DEFAULT 0",
+            "promocion_id": "INTEGER",
+            "promocion_nombre": "VARCHAR(120)",
+        },
+        "venta_pago": {
+            "marca_tarjeta": "VARCHAR(20)",
+        },
         "caja": {
             "conciliacion_json": "TEXT",
             "autorizacion_cierre_id": "INTEGER",

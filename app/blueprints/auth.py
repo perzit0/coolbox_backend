@@ -229,6 +229,9 @@ def _rol_activo():
 
 
 def _usuario_actual():
+    # Los tokens de clientes de la tienda online ("cliente:<id>") no sirven en el sistema interno
+    if get_jwt().get("tipo") == "cliente" or not str(get_jwt_identity()).isdigit():
+        raise ApiError("token_de_cliente", "Esta sesión es de la tienda online, no del sistema de caja.", 403)
     return db.session.get(Usuario, int(get_jwt_identity()))
 
 

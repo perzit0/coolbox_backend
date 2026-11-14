@@ -271,7 +271,7 @@ class Producto(db.Model):
 class MovimientoStock(db.Model):
     """Kardex: cada cambio de stock queda registrado con su motivo y autor."""
     __tablename__ = "movimiento_stock"
-    TIPOS = ("inicial", "entrada", "salida", "ajuste", "venta", "anulacion")
+    TIPOS = ("inicial", "entrada", "salida", "ajuste", "venta", "anulacion", "pedido_web", "cancel_web")
 
     id = db.Column(db.Integer, primary_key=True)
     producto_id = db.Column(db.Integer, ForeignKey("producto.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -444,7 +444,12 @@ class VentaDetalle(db.Model):
     producto_id = db.Column(db.Integer, ForeignKey("producto.id", ondelete="RESTRICT"), nullable=False)
     cantidad = db.Column(db.Integer, nullable=False)
     precio_unitario = db.Column(db.Numeric(10, 2), nullable=False)
-    subtotal = db.Column(db.Numeric(10, 2), nullable=False)
+    subtotal = db.Column(db.Numeric(10, 2), nullable=False)  # neto de la promoción
+    # Promoción aplicada a la línea (2x1, % de descuento...). Se guarda el nombre
+    # para que el ticket siga mostrándolo aunque la promoción se edite o venza.
+    descuento = db.Column(db.Numeric(10, 2), nullable=False, default=0)
+    promocion_id = db.Column(db.Integer)
+    promocion_nombre = db.Column(db.String(120))
 
     venta = relationship("Venta", back_populates="detalles")
     producto = relationship("Producto")
@@ -460,6 +465,8 @@ class VentaDetalle(db.Model):
             "cantidad": self.cantidad,
             "precio_unitario": float(self.precio_unitario),
             "subtotal": float(self.subtotal),
+            "descuento": float(self.descuento or 0),
+            "promocion_nombre": self.promocion_nombre,
         }
 
 
@@ -479,6 +486,7 @@ class VentaPago(db.Model):
     vuelto = db.Column(db.Numeric(10, 2))
     proveedor = db.Column(db.String(30))                       # OpenPay, Niubiz, Izipay... / app de la billetera
     tipo_tarjeta = db.Column(db.String(10))                    # debito | credito
+    marca_tarjeta = db.Column(db.String(20))                   # Visa | Mastercard | American Express | Diners Club
     nro_operacion = db.Column(db.String(30), index=True)
 
     venta = relationship("Venta", back_populates="pagos")
@@ -494,6 +502,7 @@ class VentaPago(db.Model):
             "vuelto": num(self.vuelto),
             "proveedor": self.proveedor,
             "tipo_tarjeta": self.tipo_tarjeta,
+            "marca_tarjeta": self.marca_tarjeta,
             "nro_operacion": self.nro_operacion,
         }
 
@@ -574,3 +583,9 @@ class Autorizacion(db.Model):
 
 # Alias para el código que aún habla de "Categoria"
 Categoria = Familia
+
+
+# Modelos de la tienda online (clientes, sedes, promociones y pedidos)
+from .models_tienda import (  # noqa: E402,F401
+    Cliente, CodigoAcceso, Pedido, PedidoDetalle, Promocion, PromocionProducto, Sede,
+)

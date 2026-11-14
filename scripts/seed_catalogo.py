@@ -2,7 +2,7 @@
 
 - Permisos y roles (catálogo maestro). Retira roles obsoletos (Cajero, Almacenero).
 - Familias, subfamilias y marcas (estructura del SKU de 8 dígitos).
-- 101 productos reales de coolbox.pe (nombre, referencia, precio e imagen
+- 145 productos reales de coolbox.pe (95 iniciales + 50 de la tienda online) (nombre, referencia, precio e imagen
   oficial publicados en la tienda en línea de Coolbox, octubre 2026).
 - Migra los 20 productos de la versión anterior (LAP001, CEL001...) a su
   equivalente real, conservando su stock y su historial de ventas.
@@ -365,6 +365,10 @@ PRODUCTOS += [
      99.90, 20, "548909/ChatGPT-Image-12-jun-2026-04_35_34-p.m..png?v=639197346488930000"),
 ]
 
+# Productos con buena demanda agregados para la tienda online (ver scripts/seed_tienda.py)
+from scripts.seed_tienda import PRODUCTOS_NUEVOS, seed_tienda  # noqa: E402
+PRODUCTOS = PRODUCTOS + [p[:8] for p in PRODUCTOS_NUEVOS]
+
 # Productos de la versión anterior -> referencia Coolbox real que los reemplaza.
 # Se conserva la fila (y por tanto sus ventas y stock); se actualizan nombre,
 # precio, imagen, familia, marca y se le asigna su SKU.
@@ -620,6 +624,7 @@ def seed_catalogo_maestro():
     _seed_familias_marcas()
     _seed_productos()
     _seed_usuarios_demo()
+    seed_tienda()
 
 
 if __name__ == "__main__":

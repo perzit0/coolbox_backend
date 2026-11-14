@@ -34,6 +34,15 @@ class Config:
     FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
     EMAIL_DOMAIN = os.getenv("EMAIL_DOMAIN", "coolbox.com.pe")
     IGV_RATE = float(os.getenv("IGV_RATE", "0.18"))
+    # Tienda online: clientes
+    CLIENTE_TOKEN_DIAS = int(os.getenv("CLIENTE_TOKEN_DIAS", "30"))
+    GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")       # inicio de sesión con Google (opcional)
+    SMTP_HOST = os.getenv("SMTP_HOST", "")                     # código por correo (opcional), p. ej. smtp.gmail.com
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USER = os.getenv("SMTP_USER", "")
+    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+    SMTP_FROM = os.getenv("SMTP_FROM", "")
+    PAGOEFECTIVO_HORAS = int(os.getenv("PAGOEFECTIVO_HORAS", "24"))
     # Caja
     CUADRE_CIEGO = os.getenv("CUADRE_CIEGO", "1") not in ("0", "false", "False", "no")
     LIMITE_EFECTIVO_CAJA = float(os.getenv("LIMITE_EFECTIVO_CAJA", "1500"))

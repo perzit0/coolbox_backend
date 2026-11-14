@@ -20,6 +20,7 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
+from ..services import promociones as promo_svc
 from ..extensions import db
 import re
 
@@ -118,6 +119,32 @@ def obtener_venta(venta_id):
 
 
 PROVEEDORES_POS = ("OpenPay", "Niubiz", "Izipay", "Culqi", "Otro")
+MARCAS_TARJETA = ("Visa", "Mastercard", "American Express", "Diners Club")
+
+
+@bp.post("/ventas/cotizar")
+@jwt_required()
+def cotizar_venta():
+    """Precios del carrito de caja con las promociones vigentes en tienda (sin registrar nada)."""
+    require_permiso("ventas.crear")
+    items = (request.get_json(silent=True) or {}).get("items") or []
+    cantidades = {}
+    for it in items[:60]:
+        try:
+            pid, q = int(it.get("producto_id")), int(it.get("cantidad") or 0)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if q > 0:
+            cantidades[pid] = cantidades.get(pid, 0) + q
+    productos = {p.id: p for p in Producto.query.filter(Producto.id.in_(cantidades.keys() or [0])).all()}
+    cot = promo_svc.cotizar([(productos[pid], q) for pid, q in cantidades.items() if pid in productos], "tienda")
+    return jsonify(
+        items=[{"producto_id": it["producto"].id, "cantidad": it["cantidad"], "bruto": float(it["bruto"]),
+                "descuento": float(it["descuento"]), "neto": float(it["neto"]),
+                "promocion": {"id": it["promocion"].id, "nombre": it["promocion"].nombre,
+                              "etiqueta": promo_svc.etiqueta(it["promocion"])} if it["promocion"] else None}
+               for it in cot["items"]],
+        subtotal=float(cot["subtotal"]), descuento_promociones=float(cot["descuento"]), total=float(cot["total"]))
 
 
 def _decimal(valor, mensaje):
@@ -150,7 +177,7 @@ def _leer_pagos(data, total):
         if monto <= 0:
             raise ApiError("monto_invalido", "Cada pago debe tener un monto mayor a cero.", 400)
         fila = {"metodo": metodo, "monto": monto, "monto_recibido": None, "vuelto": None,
-                "proveedor": None, "tipo_tarjeta": None, "nro_operacion": None}
+                "proveedor": None, "tipo_tarjeta": None, "nro_operacion": None, "marca_tarjeta": None}
         if metodo == "efectivo":
             if hay_efectivo:
                 raise ApiError("pagos_invalidos", "Registre el efectivo en un solo pago.", 400)
@@ -172,6 +199,10 @@ def _leer_pagos(data, total):
                     raise ApiError("proveedor_requerido", "Seleccione el POS con el que se cobró (OpenPay, Niubiz, Izipay...).", 400)
                 fila["proveedor"] = proveedor
             if metodo == "tarjeta":
+                marca = (p.get("marca_tarjeta") or "").strip()
+                if marca and marca not in MARCAS_TARJETA:
+                    raise ApiError("marca_tarjeta_invalida", "Marca de tarjeta no válida.", 400)
+                fila["marca_tarjeta"] = marca or None
                 tipo = (p.get("tipo_tarjeta") or "").strip().lower()
                 if tipo not in ("debito", "credito"):
                     raise ApiError("tipo_tarjeta_requerido", "Indique si la tarjeta es de débito o crédito.", 400)
@@ -229,8 +260,6 @@ def crear_venta():
     productos = Producto.query.filter(Producto.id.in_(cantidades.keys())).with_for_update().all()
     por_id = {p.id: p for p in productos}
 
-    bruto = Decimal("0")
-    lineas = []
     for pid, cantidad in cantidades.items():
         producto = por_id.get(pid)
         if not producto:
@@ -240,11 +269,11 @@ def crear_venta():
         if producto.stock < cantidad:
             raise ApiError("stock_insuficiente",
                            f"Stock insuficiente para {producto.nombre}. Disponible: {producto.stock}.", 409)
-        precio_unit = Decimal(str(producto.precio))
-        sub = (precio_unit * cantidad).quantize(CENTIMO)
-        bruto += sub
-        lineas.append((producto, cantidad, precio_unit, sub))
-    bruto = bruto.quantize(CENTIMO)
+    # Promociones vigentes en tienda (2x1, % de descuento, precio especial...): la mejor por línea
+    cot = promo_svc.cotizar([(por_id[pid], q) for pid, q in cantidades.items()], "tienda")
+    lineas = [(it["producto"], it["cantidad"], Decimal(str(it["producto"].precio)), it["neto"], it["descuento"],
+               it["promocion"]) for it in cot["items"]]
+    bruto = cot["total"].quantize(CENTIMO)
 
     # Descuento global: hasta DESCUENTO_MAX_CAJERO % lo aplica el cajero; más, con PIN de supervisor.
     descuento = Decimal("0")
@@ -293,9 +322,11 @@ def crear_venta():
 
     for p in pagos:
         db.session.add(VentaPago(venta_id=venta.id, **p))
-    for producto, cantidad, precio_unit, sub in lineas:
+    for producto, cantidad, precio_unit, sub, desc_linea, promo in lineas:
         db.session.add(VentaDetalle(venta_id=venta.id, producto_id=producto.id, cantidad=cantidad,
-                                    precio_unitario=precio_unit, subtotal=sub))
+                                    precio_unitario=precio_unit, subtotal=sub, descuento=desc_linea,
+                                    promocion_id=promo.id if promo else None,
+                                    promocion_nombre=promo.nombre if promo else None))
         mover_stock(producto, -cantidad, "venta", usuario, f"Venta {venta.codigo}", venta)
 
     db.session.commit()

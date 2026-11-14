@@ -22,6 +22,8 @@ PERMISOS = [
     ("reportes.ver", "Consultar reportes de operación"),
     ("caja.operar", "Abrir y cerrar su propia caja (turno de ventas)"),
     ("caja.supervisar", "Controlar las cajas de todos los cajeros y sus arqueos"),
+    ("promociones.gestionar", "Crear, programar y desactivar promociones (2x1, % de descuento, precio especial, cupones)"),
+    ("pedidos.gestionar", "Ver los pedidos online de la tienda web y entregarlos en la sede"),
     ("caja.autorizar", "Autorizar con PIN, en la caja del cajero, acciones restringidas (anulaciones, descuentos, retiros, reimpresiones)"),
 ]
 
@@ -48,6 +50,7 @@ ROLES = [
             "ventas.crear", "ventas.ver", "ventas.anular",
             "reportes.ver",
             "caja.operar", "caja.supervisar", "caja.autorizar",
+            "promociones.gestionar", "pedidos.gestionar",
         ],
     },
     {
@@ -58,7 +61,7 @@ ROLES = [
                        "Las acciones restringidas las aprueba un Supervisor de Caja con su PIN, sin salir de la sesión.",
         "es_admin": False,
         # Sin "ventas.anular" directo: el cajero anula solo con el PIN de un supervisor.
-        "permisos": ["productos.ver", "ventas.crear", "ventas.ver", "caja.operar"],
+        "permisos": ["productos.ver", "ventas.crear", "ventas.ver", "caja.operar", "pedidos.gestionar"],
     },
     {
         "codigo": "supervisor",
@@ -67,6 +70,6 @@ ROLES = [
                        "y revisa los arqueos.",
         "es_admin": False,
         "permisos": ["productos.ver", "kardex.ver", "ventas.ver", "ventas.anular", "reportes.ver",
-                     "caja.supervisar", "caja.autorizar"],
+                     "caja.supervisar", "caja.autorizar", "pedidos.gestionar"],
     },
 ]
