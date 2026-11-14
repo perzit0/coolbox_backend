@@ -21,8 +21,9 @@ Endpoints de salud: `GET /health` y `GET /health/db` (prueba la conexión a la B
 Usuarios demo:
 
 - Administrador — `admin@coolbox.com.pe` / `Admin123!`
-- Vendedor — `jperezl@coolbox.com.pe` / `Vendedor123!`
-- Supervisor de Ventas — `mtorresr@coolbox.com.pe` / `Supervisor123!` (en una BD nueva también tiene el rol Vendedor, para probar la selección de rol)
+- Cajero — `jperezl@coolbox.com.pe` / `Vendedor123!`
+- Supervisor de Caja — `mtorresr@coolbox.com.pe` / `Supervisor123!` · **PIN 482615** (en una BD nueva también tiene el rol Cajero, para probar la selección de rol)
+- El Administrador demo tiene **PIN 739142**. Los PIN demo solo se asignan si el usuario aún no tiene uno; cada supervisor puede cambiarlo en Mi cuenta.
 
 ## Variables de entorno
 
@@ -34,15 +35,24 @@ Usuarios demo:
 | `FRONTEND_ORIGIN` | URL exacta del frontend Vercel. Acepta varias separadas por coma.            |
 | `EMAIL_DOMAIN`    | Dominio institucional (por defecto `coolbox.com.pe`).                         |
 | `IGV_RATE`        | Tasa del IGV para descomposición del total (por defecto `0.18`).             |
+| `CUADRE_CIEGO`    | `1` (defecto): el cajero no ve el efectivo esperado hasta cerrar. `0` lo muestra. |
+| `LIMITE_EFECTIVO_CAJA` | Efectivo en gaveta que dispara el aviso de retiro parcial (defecto `1500`). |
+| `DESCUENTO_MAX_CAJERO` | % de descuento que el cajero aplica sin PIN (defecto `5`).              |
+| `DESCUENTO_MAX_TOTAL`  | % máximo de descuento aun con PIN (defecto `30`).                        |
+| `MONTO_BOLETA_CON_DNI` | Total desde el que se exige DNI/CE/RUC del cliente (defecto `700`, SUNAT). |
 
 ## Reglas del negocio implementadas
 
 - **Correo automático**: `Juan Daniel Pérez Lozano → jperezl@coolbox.com.pe`. Si ya existe, se agrega un contador (`jperezl1`, `jperezl2`, ...). Ver `app/services/email_generator.py`.
 - **Login único**: `POST /api/auth/login` para todo el personal. Con un solo rol, el rol queda activo al ingresar; con varios roles (el Administrador incluido) se elige en `POST /api/auth/seleccionar-rol`.
 - **Selección de rol**: al iniciar sesión, el usuario elige uno de sus roles (`POST /api/auth/seleccionar-rol`). El rol activo viaja en el JWT y controla qué endpoints puede usar.
-- **Roles predefinidos**: Administrador, Vendedor y Supervisor de Ventas. Un usuario puede tener varios roles asignados. Se retiraron Cajero (el Vendedor cobra; sus usuarios y ventas pasan a Vendedor) y Almacenero (el módulo se concentra en ventas y caja; entradas, salidas y kardex quedan en el Administrador).
-- **Anulación de ventas**: solo Supervisor de Ventas y Administrador (`ventas.anular`).
-- **Ventas sin DNI/RUC**: solo se guarda un nombre de cliente opcional (no hay validación con RENIEC/SUNAT).
+- **Roles predefinidos**: Administrador, **Cajero** y **Supervisor de Caja**. Un usuario puede tener varios roles asignados. Los códigos internos siguen siendo `vendedor` y `supervisor` para no romper usuarios ni ventas existentes; solo cambió el nombre visible. Almacenero se retiró (entradas, salidas y kardex quedan en el Administrador).
+- **Autorización con PIN en la caja** (`app/services/autorizacion.py`): el cajero no sale de su sesión. El supervisor elige su nombre, escribe su PIN (exactamente 6 dígitos, guardado con hash) y elige un motivo. La API entrega un token de **un solo uso, válido 90 s**, solo para esa acción (y esa venta). Tres PIN errados bloquean el PIN de ese supervisor 5 minutos. Nadie puede autorizarse a sí mismo. Todo intento queda en la bitácora `autorizacion`.
+- **Acciones que piden PIN**: retirar o restar un producto ya registrado en el carrito, cancelar la venta en curso, descuento mayor al 5 %, anular una venta cobrada (desde la caja del cajero), retiro parcial de efectivo, reimpresión de un comprobante y cierre de caja con diferencia.
+- **Anulación de ventas**: el Supervisor de Caja y el Administrador anulan directamente (`ventas.anular`); el Cajero anula ventas de **su** caja abierta con el PIN de un supervisor.
+- **Medios de pago reales**: efectivo (recibido y vuelto), tarjeta en POS (OpenPay, Niubiz, Izipay, Culqi; débito o crédito; N° de operación del voucher), QR del POS, Yape y Plin directos (N° de operación). **Pago mixto** de hasta 3 medios; la suma debe ser exacta. Un N° de operación no puede usarse dos veces (evita capturas de Yape reutilizadas). Nunca se guarda el número de tarjeta.
+- **Cliente**: nombre y documento opcionales; para ventas mayores a S/ 700 se exige DNI, CE o RUC (regla de SUNAT para boletas).
+- **Caja**: retiro parcial (sangría) con PIN cuando la gaveta supera el límite; **cuadre ciego** (el cajero cuenta antes de ver lo esperado); conciliación de tarjeta/QR/Yape/Plin contra el cierre del POS y los reportes de las apps; si hay diferencia se exige observación y PIN. Efectivo esperado = fondo + cobros en efectivo − retiros.
 - **Imágenes de producto**: campo `imagen_url` (URL https o foto subida como data URL, máx. ~1 MB). La columna se agrega sola en BD existentes (`app/services/schema.py`).
 - **Ventas en tienda**: al registrar una venta se descuenta stock; al anularla se devuelve stock. El código correlativo es `V-000001`.
 
@@ -66,7 +76,13 @@ Usuarios demo:
 | `POST /api/productos/:id/stock`            | Ajusta stock (`delta` o `stock` absoluto).                           |
 | `GET  /api/ventas`                         | Últimas 200 ventas (permiso `ventas.ver`).                           |
 | `POST /api/ventas`                         | Registra venta y descuenta stock (permiso `ventas.crear`).           |
-| `POST /api/ventas/:id/anular`              | Anula venta y devuelve stock (permiso `ventas.anular`).              |
+| `POST /api/ventas/:id/anular`              | Anula venta y devuelve stock (`ventas.anular`, o cajero con `autorizacion_token`). |
+| `GET  /api/autorizaciones/supervisores`    | Supervisores activos que pueden autorizar (para el modal del cajero). |
+| `POST /api/autorizaciones`                 | Valida el PIN y devuelve el token de un solo uso.                    |
+| `GET  /api/autorizaciones`                 | Bitácora de autorizaciones (permiso `caja.supervisar`).              |
+| `PUT  /api/auth/pin`                       | El supervisor crea o cambia su PIN (exige su contraseña).            |
+| `POST /api/cajas/retiro`                   | Retiro parcial de efectivo con `autorizacion_token`.                 |
+| `POST /api/cajas/cerrar`                   | Arqueo + conciliación. Con diferencia responde 409 `diferencia_detectada` hasta recibir observación y token. |
 | `GET  /api/ventas/reporte/resumen`         | Resumen operacional (permiso `reportes.ver`).                        |
 
 ## Despliegue en Render + Supabase

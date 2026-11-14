@@ -2,16 +2,17 @@ from flask import current_app, jsonify
 
 
 class ApiError(Exception):
-    def __init__(self, error, detail=None, status=400):
+    def __init__(self, error, detail=None, status=400, extra=None):
         self.error = error
         self.detail = detail or error
         self.status = status
+        self.extra = extra or {}
 
 
 def register_error_handlers(app):
     @app.errorhandler(ApiError)
     def api_error(error):
-        return jsonify(error=error.error, detail=error.detail), error.status
+        return jsonify(error=error.error, detail=error.detail, **error.extra), error.status
 
     @app.errorhandler(404)
     def not_found(_):

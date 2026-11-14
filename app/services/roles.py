@@ -21,7 +21,8 @@ PERMISOS = [
     ("ventas.anular", "Anular una venta ya emitida"),
     ("reportes.ver", "Consultar reportes de operación"),
     ("caja.operar", "Abrir y cerrar su propia caja (turno de ventas)"),
-    ("caja.supervisar", "Controlar las cajas de todos los vendedores y sus arqueos"),
+    ("caja.supervisar", "Controlar las cajas de todos los cajeros y sus arqueos"),
+    ("caja.autorizar", "Autorizar con PIN, en la caja del cajero, acciones restringidas (anulaciones, descuentos, retiros, reimpresiones)"),
 ]
 
 # Roles que existieron en versiones anteriores y deben retirarse de la BD.
@@ -46,22 +47,26 @@ ROLES = [
             "kardex.ver",
             "ventas.crear", "ventas.ver", "ventas.anular",
             "reportes.ver",
-            "caja.operar", "caja.supervisar",
+            "caja.operar", "caja.supervisar", "caja.autorizar",
         ],
     },
     {
+        # El código interno se mantiene ("vendedor") para no romper usuarios ni ventas existentes.
         "codigo": "vendedor",
-        "nombre": "Vendedor",
-        "descripcion": "Atiende al cliente en tienda, registra la venta, cobra y entrega el comprobante.",
+        "nombre": "Cajero",
+        "descripcion": "Atiende al cliente en caja: registra la venta, cobra con cualquier medio de pago y entrega el comprobante. "
+                       "Las acciones restringidas las aprueba un Supervisor de Caja con su PIN, sin salir de la sesión.",
         "es_admin": False,
-        # Sin "ventas.anular": solo el Supervisor (y el Administrador) anulan ventas.
+        # Sin "ventas.anular" directo: el cajero anula solo con el PIN de un supervisor.
         "permisos": ["productos.ver", "ventas.crear", "ventas.ver", "caja.operar"],
     },
     {
         "codigo": "supervisor",
-        "nombre": "Supervisor de Ventas",
-        "descripcion": "Supervisa las ventas y las cajas de la tienda, revisa los arqueos y es el único rol de tienda que puede anular ventas.",
+        "nombre": "Supervisor de Caja",
+        "descripcion": "Supervisa las cajas de la tienda: autoriza con su PIN anulaciones, descuentos, retiros y cierres con diferencia, "
+                       "y revisa los arqueos.",
         "es_admin": False,
-        "permisos": ["productos.ver", "kardex.ver", "ventas.ver", "ventas.anular", "reportes.ver", "caja.supervisar"],
+        "permisos": ["productos.ver", "kardex.ver", "ventas.ver", "ventas.anular", "reportes.ver",
+                     "caja.supervisar", "caja.autorizar"],
     },
 ]

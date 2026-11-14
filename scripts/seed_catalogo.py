@@ -7,7 +7,8 @@
 - Migra los 20 productos de la versión anterior (LAP001, CEL001...) a su
   equivalente real, conservando su stock y su historial de ventas.
 - Asigna SKU a cualquier producto que aún no lo tenga.
-- Usuarios demo: administrador, vendedor y supervisor de ventas (este último también vende).
+- Usuarios demo: administrador, cajero y supervisor de caja (este último también puede trabajar como cajero).
+  El supervisor y el administrador demo reciben un PIN de autorización si aún no tienen uno.
 
 Se invoca automáticamente al iniciar la app (ver app/__init__.py) para que
 Render + Supabase queden listos sin comandos manuales adicionales.
@@ -593,15 +594,21 @@ def _seed_usuarios_demo():
     # Administrador demo (admin@coolbox.com.pe / Admin123!)
     _crear_usuario_demo("00000001", "Administrador", "Sistema", "Coolbox", "Admin123!",
                         [rol.get("administrador")], email="admin@coolbox.com.pe")
-    # Vendedor demo: vende y cobra en su propia caja
+    # Cajero demo: vende y cobra en su propia caja
     # (jperezl@coolbox.com.pe / Vendedor123!)
     _crear_usuario_demo("70123456", "Juan Daniel", "Perez", "Lozano", "Vendedor123!",
                         [rol.get("vendedor")])
-    # Supervisor de ventas demo con dos roles: al ingresar elige con cuál trabajar.
-    # Como Supervisor es el único rol de tienda que anula ventas.
+    # Supervisor de caja demo con dos roles: al ingresar elige con cuál trabajar.
+    # Autoriza con su PIN las acciones restringidas en la caja de los cajeros.
     # (mtorresr@coolbox.com.pe / Supervisor123!)
     _crear_usuario_demo("70987654", "Maria Elena", "Torres", "Rojas", "Supervisor123!",
                         [rol.get("supervisor"), rol.get("vendedor")])
+    # PIN de autorización demo de 6 dígitos (solo si aún no configuraron uno propio).
+    # Si todavía tienen el PIN demo antiguo de 4 dígitos, se reemplaza por el nuevo.
+    for dni, pin, pin_antiguo in (("70987654", "482615", "4826"), ("00000001", "739142", "7391")):
+        usuario = Usuario.query.filter_by(dni=dni).first()
+        if usuario and (not usuario.pin_hash or usuario.check_pin(pin_antiguo)):
+            usuario.set_pin(pin)
     db.session.commit()
 
 

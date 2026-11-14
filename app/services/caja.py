@@ -55,37 +55,51 @@ def exigir_caja_abierta(usuario):
     return caja
 
 
-def resumen_caja(caja):
-    """Totales del turno: ventas por método de pago y efectivo esperado en caja.
+METODOS_ELECTRONICOS = ("tarjeta", "qr", "yape", "plin")
 
-    Efectivo esperado = fondo inicial + ventas completadas en efectivo.
+
+def resumen_caja(caja):
+    """Totales del turno: cobros por método de pago, retiros y efectivo esperado.
+
+    Efectivo esperado = fondo inicial + cobros en efectivo (netos de vuelto) - retiros.
     Las ventas anuladas no suman (su dinero se devolvió al cliente).
+    Con pago mixto, cada parte suma en su propio método.
     """
+    from flask import current_app
     por_metodo = {}
     completadas = anuladas = 0
     total = Decimal("0")
     total_anulado = Decimal("0")
+    total_descuentos = Decimal("0")
     for v in caja.ventas:
-        monto = Decimal(str(v.total))
+        monto_venta = Decimal(str(v.total))
         if v.estado == "anulada":
             anuladas += 1
-            total_anulado += monto
+            total_anulado += monto_venta
             continue
         completadas += 1
-        total += monto
-        fila = por_metodo.setdefault(v.metodo_pago, {"metodo": v.metodo_pago, "ventas": 0, "total": Decimal("0")})
-        fila["ventas"] += 1
-        fila["total"] += monto
+        total += monto_venta
+        total_descuentos += Decimal(str(v.descuento or 0))
+        for metodo, monto in v.pagos_efectivos():
+            fila = por_metodo.setdefault(metodo, {"metodo": metodo, "ventas": 0, "total": Decimal("0")})
+            fila["ventas"] += 1
+            fila["total"] += monto
 
+    retiros = sum((Decimal(str(m.monto)) for m in caja.movimientos if m.tipo == "retiro"), Decimal("0"))
     efectivo_ventas = por_metodo.get("efectivo", {}).get("total", Decimal("0"))
-    esperado = (Decimal(str(caja.monto_apertura)) + efectivo_ventas).quantize(CENTIMO)
+    esperado = (Decimal(str(caja.monto_apertura)) + efectivo_ventas - retiros).quantize(CENTIMO)
+    limite = Decimal(str(current_app.config.get("LIMITE_EFECTIVO_CAJA", 1500)))
     return {
         "ventas_completadas": completadas,
         "ventas_anuladas": anuladas,
         "total_vendido": float(total.quantize(CENTIMO)),
         "total_anulado": float(total_anulado.quantize(CENTIMO)),
+        "total_descuentos": float(total_descuentos.quantize(CENTIMO)),
         "efectivo_ventas": float(efectivo_ventas.quantize(CENTIMO)),
+        "retiros": float(retiros.quantize(CENTIMO)),
         "efectivo_esperado": float(esperado),
+        "limite_efectivo": float(limite),
+        "requiere_retiro": esperado > limite,
         "por_metodo": [
             {"metodo": f["metodo"], "ventas": f["ventas"], "total": float(f["total"].quantize(CENTIMO))}
             for f in sorted(por_metodo.values(), key=lambda f: f["total"], reverse=True)
@@ -93,10 +107,30 @@ def resumen_caja(caja):
     }
 
 
-def caja_con_resumen(caja, include_ventas=False):
+def ocultar_para_cuadre_ciego(data):
+    """Cuadre ciego: mientras la caja está abierta, el cajero no ve cuánto efectivo
+    debería tener. Así cuenta lo que realmente hay y no "ajusta" el conteo."""
+    r = data["resumen"]
+    r["cuadre_ciego"] = True
+    for clave in ("efectivo_esperado", "efectivo_ventas"):
+        r[clave] = None
+    r["por_metodo"] = [m for m in r["por_metodo"] if m["metodo"] != "efectivo"] + (
+        [{"metodo": "efectivo", "ventas": next((m["ventas"] for m in r["por_metodo"] if m["metodo"] == "efectivo"), 0),
+          "total": None}] if any(m["metodo"] == "efectivo" for m in r["por_metodo"]) else [])
+    return data
+
+
+def caja_con_resumen(caja, include_ventas=False, ciego=False):
     data = caja.to_dict()
     data["resumen"] = resumen_caja(caja)
     data["conteo"] = json.loads(caja.conteo_json) if caja.conteo_json else None
+    data["conciliacion"] = json.loads(caja.conciliacion_json) if caja.conciliacion_json else None
+    data["retiros"] = [m.to_dict() for m in caja.movimientos]
     if include_ventas:
         data["ventas"] = [v.to_dict(include_detalles=False) for v in caja.ventas]
+        from ..models import Autorizacion
+        data["autorizaciones"] = [a.to_dict() for a in
+                                  Autorizacion.query.filter_by(caja_id=caja.id).order_by(Autorizacion.fecha).all()]
+    if ciego and caja.estado == "abierta":
+        ocultar_para_cuadre_ciego(data)
     return data

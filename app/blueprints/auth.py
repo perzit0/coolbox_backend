@@ -203,6 +203,23 @@ def actualizar_perfil():
     return jsonify(usuario=usuario.to_dict())
 
 
+@bp.put("/auth/pin")
+@jwt_required()
+def configurar_pin():
+    """El supervisor define o cambia su PIN de autorización (exige su contraseña)."""
+    from ..services.autorizacion import validar_pin_nuevo
+    usuario = _usuario_actual_o_404()
+    if not usuario.puede_autorizar:
+        raise ApiError("permiso_insuficiente", "Solo los supervisores y administradores tienen PIN de autorización.", 403)
+    data = request.get_json(silent=True) or {}
+    if not usuario.check_password(data.get("password_actual") or ""):
+        raise ApiError("password_incorrecta", "La contraseña actual no es correcta.", 400)
+    pin = validar_pin_nuevo(data.get("pin"), usuario)
+    usuario.set_pin(pin)
+    db.session.commit()
+    return jsonify(usuario=usuario.to_dict(), mensaje="PIN de autorización actualizado.")
+
+
 # ---- Utilidades para otros blueprints ----
 
 def _rol_activo():

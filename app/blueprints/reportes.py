@@ -1,4 +1,4 @@
-"""Reportes de operación para Supervisor de Ventas y Administrador.
+"""Reportes de operación para Supervisor de Caja y Administrador.
 
 GET /api/reportes/resumen?desde=AAAA-MM-DD&hasta=AAAA-MM-DD
     Indicadores, ventas por día, por método de pago, por vendedor, por
@@ -38,7 +38,7 @@ def resumen():
 
     ventas = (Venta.query
               .options(joinedload(Venta.detalles).joinedload(VentaDetalle.producto).joinedload(Producto.familia),
-                       joinedload(Venta.usuario))
+                       joinedload(Venta.usuario), joinedload(Venta.pagos))
               .filter(Venta.fecha >= inicio, Venta.fecha < fin)
               .all())
 
@@ -67,8 +67,9 @@ def resumen():
     por_familia = defaultdict(lambda: {"total": Decimal("0"), "unidades": 0})
     por_producto = defaultdict(lambda: {"total": Decimal("0"), "unidades": 0, "nombre": "", "sku": None, "imagen_url": None})
     for v in completadas:
-        por_metodo[v.metodo_pago]["total"] += Decimal(v.total)
-        por_metodo[v.metodo_pago]["ventas"] += 1
+        for metodo, monto in v.pagos_efectivos():
+            por_metodo[metodo]["total"] += monto
+            por_metodo[metodo]["ventas"] += 1
         pv = por_vendedor[v.usuario_id]
         pv["total"] += Decimal(v.total)
         pv["ventas"] += 1
@@ -83,7 +84,7 @@ def resumen():
             if det.producto:
                 pp.update(nombre=det.producto.nombre, sku=det.producto.sku, imagen_url=det.producto.imagen_url)
 
-    # Cuadre de cajas por vendedor (turnos abiertos en el rango)
+    # Cuadre de cajas por cajero (turnos abiertos en el rango)
     from ..models import Caja
     cajas = Caja.query.filter(Caja.fecha_apertura >= inicio, Caja.fecha_apertura < fin).all()
     cuadre = defaultdict(lambda: {"nombre": "", "cajas": 0, "abiertas": 0, "cuadradas": 0,
@@ -125,6 +126,7 @@ def resumen():
             "cajas": len(cajas),
             "cajas_abiertas": sum(1 for c in cajas if c.estado == "abierta"),
             "cajas_con_diferencia": sum(1 for c in cajas if c.estado == "cerrada" and Decimal(c.diferencia or 0) != 0),
+            "descuentos": float(sum((Decimal(v.descuento or 0) for v in completadas), Decimal("0"))),
         },
         por_dia=serie_dias,
         por_metodo=[{"metodo": k, "total": float(x["total"]), "ventas": x["ventas"]} for k, x in ordenar(por_metodo)],

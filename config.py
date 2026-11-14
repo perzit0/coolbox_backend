@@ -34,3 +34,9 @@ class Config:
     FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
     EMAIL_DOMAIN = os.getenv("EMAIL_DOMAIN", "coolbox.com.pe")
     IGV_RATE = float(os.getenv("IGV_RATE", "0.18"))
+    # Caja
+    CUADRE_CIEGO = os.getenv("CUADRE_CIEGO", "1") not in ("0", "false", "False", "no")
+    LIMITE_EFECTIVO_CAJA = float(os.getenv("LIMITE_EFECTIVO_CAJA", "1500"))
+    DESCUENTO_MAX_CAJERO = float(os.getenv("DESCUENTO_MAX_CAJERO", "5"))  # % sin autorización
+    DESCUENTO_MAX_TOTAL = float(os.getenv("DESCUENTO_MAX_TOTAL", "30"))   # % tope con autorización
+    MONTO_BOLETA_CON_DNI = float(os.getenv("MONTO_BOLETA_CON_DNI", "700"))  # SUNAT: boletas > S/ 700

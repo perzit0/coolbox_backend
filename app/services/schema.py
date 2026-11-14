@@ -34,6 +34,9 @@ def _columnas_nuevas(dialecto):
             "intentos_fallidos": "INTEGER NOT NULL DEFAULT 0",
             "bloqueado_hasta": t["fecha"],
             "ultimo_acceso": t["fecha"],
+            "pin_hash": "VARCHAR(255)",
+            "pin_intentos": "INTEGER NOT NULL DEFAULT 0",
+            "pin_bloqueado_hasta": t["fecha"],
         },
         "venta": {
             "monto_recibido": "NUMERIC(10, 2)",
@@ -42,6 +45,13 @@ def _columnas_nuevas(dialecto):
             "fecha_anulacion": t["fecha"],
             "motivo_anulacion": "VARCHAR(240)",
             "caja_id": "INTEGER",
+            "cliente_documento": "VARCHAR(15)",
+            "descuento": "NUMERIC(10, 2) NOT NULL DEFAULT 0",
+            "autorizada_por_id": "INTEGER",
+        },
+        "caja": {
+            "conciliacion_json": "TEXT",
+            "autorizacion_cierre_id": "INTEGER",
         },
     }
 

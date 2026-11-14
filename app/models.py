@@ -1,8 +1,8 @@
 """Modelos de dominio Coolbox.
 
 Diseñado para tienda física con proyección a venta en línea. Un usuario
-puede tener uno o varios roles (Administrador, Vendedor,
-Supervisor de Ventas). Cada rol otorga permisos concretos. Todos ingresan por
+puede tener uno o varios roles (Administrador, Cajero,
+Supervisor de Caja). Cada rol otorga permisos concretos. Todos ingresan por
 el mismo login; si el usuario tiene más de un rol, elige con cuál trabajar
 (el rol Administrador se elige igual que los demás) y ese rol define las
 acciones que puede realizar durante la sesión.
@@ -11,6 +11,7 @@ Catálogo: Familia -> Subfamilia, más Marca. El SKU de 8 dígitos se arma con
 esos códigos (ver app/services/catalogo.py).
 """
 from datetime import datetime, date, timezone
+from decimal import Decimal
 
 from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
@@ -104,6 +105,10 @@ class Usuario(db.Model):
     intentos_fallidos = db.Column(db.Integer, nullable=False, default=0)
     bloqueado_hasta = db.Column(db.DateTime(timezone=True))
     ultimo_acceso = db.Column(db.DateTime(timezone=True))
+    # PIN de supervisor: autoriza acciones restringidas en la caja de otro usuario
+    pin_hash = db.Column(db.String(255))
+    pin_intentos = db.Column(db.Integer, nullable=False, default=0)
+    pin_bloqueado_hasta = db.Column(db.DateTime(timezone=True))
 
     roles = relationship("Rol", secondary=usuario_rol, backref="usuarios")
 
@@ -112,6 +117,19 @@ class Usuario(db.Model):
 
     def check_password(self, raw):
         return check_password_hash(self.password_hash, raw)
+
+    def set_pin(self, raw):
+        self.pin_hash = generate_password_hash(raw)
+        self.pin_intentos = 0
+        self.pin_bloqueado_hasta = None
+
+    def check_pin(self, raw):
+        return bool(self.pin_hash) and check_password_hash(self.pin_hash, raw or "")
+
+    @property
+    def puede_autorizar(self):
+        """Tiene algún rol con el permiso caja.autorizar (Supervisor de Caja o Administrador)."""
+        return any(p.codigo == "caja.autorizar" for r in self.roles for p in r.permisos)
 
     @property
     def nombre_completo(self):
@@ -137,6 +155,8 @@ class Usuario(db.Model):
             "es_administrador": self.es_administrador,
             "debe_cambiar_password": bool(self.debe_cambiar_password),
             "ultimo_acceso": iso(self.ultimo_acceso),
+            "puede_autorizar": self.puede_autorizar,
+            "tiene_pin": bool(self.pin_hash),
         }
         if include_roles:
             data["roles"] = [r.to_dict(include_permisos=True) for r in self.roles]
@@ -286,9 +306,9 @@ class MovimientoStock(db.Model):
 
 
 class Caja(db.Model):
-    """Turno de caja de un vendedor.
+    """Turno de caja de un cajero.
 
-    El vendedor abre su caja con un fondo inicial en efectivo, registra sus
+    El cajero abre su caja con un fondo inicial en efectivo, registra sus
     ventas en ella y al terminar el turno la cierra con un arqueo: cuenta el
     efectivo y el sistema calcula la diferencia contra lo esperado.
     """
@@ -307,9 +327,13 @@ class Caja(db.Model):
     diferencia = db.Column(db.Numeric(10, 2))
     conteo_json = db.Column(db.Text)  # {"200": 1, "100": 3, ...} denominaciones contadas
     observacion_cierre = db.Column(db.String(240))
+    # Conciliación de medios electrónicos: {"tarjeta": {"sistema": x, "declarado": y, "diferencia": z}, ...}
+    conciliacion_json = db.Column(db.Text)
+    autorizacion_cierre_id = db.Column(db.Integer)  # si cerró con diferencia, quién lo autorizó
 
     usuario = relationship("Usuario")
     ventas = relationship("Venta", back_populates="caja", order_by="Venta.id")
+    movimientos = relationship("MovimientoCaja", back_populates="caja", order_by="MovimientoCaja.id")
 
     def to_dict(self):
         def num(v):
@@ -332,7 +356,8 @@ class Caja(db.Model):
 
 class Venta(db.Model):
     __tablename__ = "venta"
-    METODOS_PAGO = ("efectivo", "tarjeta", "yape", "plin")
+    # efectivo | tarjeta (POS) | qr (QR del POS: Yape/Plin/otras billeteras) | yape | plin (directos) | mixto
+    METODOS_PAGO = ("efectivo", "tarjeta", "qr", "yape", "plin")
 
     id = db.Column(db.Integer, primary_key=True)
     codigo = db.Column(db.String(20), nullable=False, unique=True)  # V-000001
@@ -341,7 +366,11 @@ class Venta(db.Model):
     fecha = db.Column(db.DateTime(timezone=True), nullable=False, default=ahora)
     # Solo nombre de referencia: no se solicita DNI/RUC porque no hay validación con RENIEC/SUNAT.
     cliente_nombre = db.Column(db.String(180))
+    # DNI/CE/RUC del cliente: SUNAT lo exige en boletas mayores a S/ 700 (opcional en las demás).
+    cliente_documento = db.Column(db.String(15))
+    # Método único, o "mixto" si se pagó con varios (el detalle está en venta_pago).
     metodo_pago = db.Column(db.String(30), nullable=False, default="efectivo")
+    descuento = db.Column(db.Numeric(10, 2), nullable=False, default=0)
     subtotal = db.Column(db.Numeric(10, 2), nullable=False, default=0)
     igv = db.Column(db.Numeric(10, 2), nullable=False, default=0)
     total = db.Column(db.Numeric(10, 2), nullable=False, default=0)
@@ -352,14 +381,24 @@ class Venta(db.Model):
     anulada_por_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="SET NULL"))
     fecha_anulacion = db.Column(db.DateTime(timezone=True))
     motivo_anulacion = db.Column(db.String(240))
+    # Supervisor que autorizó con PIN (anulación hecha desde la caja del cajero o descuento mayor al permitido)
+    autorizada_por_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="SET NULL"))
     # Caja (turno) en la que se cobró la venta
     caja_id = db.Column(db.Integer, ForeignKey("caja.id", ondelete="SET NULL"), index=True)
 
     caja = relationship("Caja", back_populates="ventas")
     usuario = relationship("Usuario", foreign_keys=[usuario_id])
     anulada_por = relationship("Usuario", foreign_keys=[anulada_por_id])
+    autorizada_por = relationship("Usuario", foreign_keys=[autorizada_por_id])
     rol = relationship("Rol")
     detalles = relationship("VentaDetalle", back_populates="venta", cascade="all, delete-orphan")
+    pagos = relationship("VentaPago", back_populates="venta", cascade="all, delete-orphan", order_by="VentaPago.id")
+
+    def pagos_efectivos(self):
+        """[(metodo, monto)] de la venta. Las ventas antiguas no tienen filas en venta_pago."""
+        if self.pagos:
+            return [(p.metodo, Decimal(str(p.monto))) for p in self.pagos]
+        return [(self.metodo_pago, Decimal(str(self.total)))]
 
     def to_dict(self, include_detalles=True):
         data = {
@@ -370,7 +409,13 @@ class Venta(db.Model):
             "rol": self.rol.nombre if self.rol else None,
             "fecha": iso(self.fecha),
             "cliente_nombre": self.cliente_nombre,
+            "cliente_documento": self.cliente_documento,
             "metodo_pago": self.metodo_pago,
+            "pagos": [p.to_dict() for p in self.pagos] or [
+                {"metodo": self.metodo_pago, "monto": float(self.total), "proveedor": None, "nro_operacion": None,
+                 "monto_recibido": float(self.monto_recibido) if self.monto_recibido is not None else None,
+                 "vuelto": float(self.vuelto) if self.vuelto is not None else None}],
+            "descuento": float(self.descuento or 0),
             "subtotal": float(self.subtotal),
             "igv": float(self.igv),
             "total": float(self.total),
@@ -380,6 +425,7 @@ class Venta(db.Model):
             "anulada_por": self.anulada_por.nombre_completo if self.anulada_por else None,
             "fecha_anulacion": iso(self.fecha_anulacion),
             "motivo_anulacion": self.motivo_anulacion,
+            "autorizada_por": self.autorizada_por.nombre_completo if self.autorizada_por else None,
             "cantidad_items": sum(d.cantidad for d in self.detalles),
             "caja_id": self.caja_id,
             "caja_codigo": self.caja.codigo if self.caja else None,
@@ -414,6 +460,115 @@ class VentaDetalle(db.Model):
             "cantidad": self.cantidad,
             "precio_unitario": float(self.precio_unitario),
             "subtotal": float(self.subtotal),
+        }
+
+
+class VentaPago(db.Model):
+    """Cada medio de pago usado en una venta (permite pago mixto).
+
+    Para tarjeta, QR, Yape y Plin se guarda el N° de operación del voucher o
+    de la app: con él se concilia contra el cierre del POS o el reporte de Yape.
+    Nunca se guarda el número de la tarjeta.
+    """
+    __tablename__ = "venta_pago"
+    id = db.Column(db.Integer, primary_key=True)
+    venta_id = db.Column(db.Integer, ForeignKey("venta.id", ondelete="CASCADE"), nullable=False, index=True)
+    metodo = db.Column(db.String(20), nullable=False)
+    monto = db.Column(db.Numeric(10, 2), nullable=False)       # importe aplicado a la venta
+    monto_recibido = db.Column(db.Numeric(10, 2))              # solo efectivo
+    vuelto = db.Column(db.Numeric(10, 2))
+    proveedor = db.Column(db.String(30))                       # OpenPay, Niubiz, Izipay... / app de la billetera
+    tipo_tarjeta = db.Column(db.String(10))                    # debito | credito
+    nro_operacion = db.Column(db.String(30), index=True)
+
+    venta = relationship("Venta", back_populates="pagos")
+
+    def to_dict(self):
+        def num(v):
+            return float(v) if v is not None else None
+        return {
+            "id": self.id,
+            "metodo": self.metodo,
+            "monto": float(self.monto),
+            "monto_recibido": num(self.monto_recibido),
+            "vuelto": num(self.vuelto),
+            "proveedor": self.proveedor,
+            "tipo_tarjeta": self.tipo_tarjeta,
+            "nro_operacion": self.nro_operacion,
+        }
+
+
+class MovimientoCaja(db.Model):
+    """Retiro parcial de efectivo (sangría) autorizado por un supervisor."""
+    __tablename__ = "movimiento_caja"
+    id = db.Column(db.Integer, primary_key=True)
+    caja_id = db.Column(db.Integer, ForeignKey("caja.id", ondelete="CASCADE"), nullable=False, index=True)
+    tipo = db.Column(db.String(10), nullable=False, default="retiro")  # retiro
+    monto = db.Column(db.Numeric(10, 2), nullable=False)
+    motivo = db.Column(db.String(240))
+    usuario_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="SET NULL"))
+    supervisor_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="SET NULL"))
+    autorizacion_id = db.Column(db.Integer)
+    fecha = db.Column(db.DateTime(timezone=True), nullable=False, default=ahora)
+
+    caja = relationship("Caja", back_populates="movimientos")
+    usuario = relationship("Usuario", foreign_keys=[usuario_id])
+    supervisor = relationship("Usuario", foreign_keys=[supervisor_id])
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "tipo": self.tipo,
+            "monto": float(self.monto),
+            "motivo": self.motivo,
+            "usuario_nombre": self.usuario.nombre_completo if self.usuario else None,
+            "supervisor_nombre": self.supervisor.nombre_completo if self.supervisor else None,
+            "fecha": iso(self.fecha),
+        }
+
+
+class Autorizacion(db.Model):
+    """Bitácora de autorizaciones con PIN de supervisor (aprobadas y rechazadas).
+
+    Una autorización aprobada entrega un token de un solo uso, válido por
+    pocos segundos y solo para la acción (y la venta) indicada.
+    """
+    __tablename__ = "autorizacion"
+    id = db.Column(db.Integer, primary_key=True)
+    accion = db.Column(db.String(30), nullable=False, index=True)
+    solicitante_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="SET NULL"))
+    supervisor_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="SET NULL"))
+    caja_id = db.Column(db.Integer, ForeignKey("caja.id", ondelete="SET NULL"), index=True)
+    venta_id = db.Column(db.Integer, ForeignKey("venta.id", ondelete="SET NULL"))
+    monto = db.Column(db.Numeric(10, 2))
+    motivo = db.Column(db.String(60))
+    comentario = db.Column(db.String(240))
+    detalle = db.Column(db.String(240))        # p. ej. producto retirado del carrito
+    resultado = db.Column(db.String(20), nullable=False)  # aprobada | pin_invalido | bloqueado | rechazada
+    token_hash = db.Column(db.String(64), index=True)
+    usada = db.Column(db.Boolean, nullable=False, default=False)
+    expira_en = db.Column(db.DateTime(timezone=True))
+    fecha = db.Column(db.DateTime(timezone=True), nullable=False, default=ahora, index=True)
+
+    solicitante = relationship("Usuario", foreign_keys=[solicitante_id])
+    supervisor = relationship("Usuario", foreign_keys=[supervisor_id])
+    venta = relationship("Venta")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "accion": self.accion,
+            "solicitante_nombre": self.solicitante.nombre_completo if self.solicitante else None,
+            "supervisor_nombre": self.supervisor.nombre_completo if self.supervisor else None,
+            "caja_id": self.caja_id,
+            "venta_codigo": self.venta.codigo if self.venta else None,
+            "monto": float(self.monto) if self.monto is not None else None,
+            "motivo": self.motivo,
+            "comentario": self.comentario,
+            "detalle": self.detalle,
+            "resultado": self.resultado,
+            "usada": self.usada,
+            "fecha": iso(self.fecha),
         }
 
 
