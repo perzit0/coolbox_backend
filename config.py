@@ -48,4 +48,18 @@ class Config:
     LIMITE_EFECTIVO_CAJA = float(os.getenv("LIMITE_EFECTIVO_CAJA", "1500"))
     DESCUENTO_MAX_CAJERO = float(os.getenv("DESCUENTO_MAX_CAJERO", "5"))  # % sin autorización
     DESCUENTO_MAX_TOTAL = float(os.getenv("DESCUENTO_MAX_TOTAL", "30"))   # % tope con autorización
-    MONTO_BOLETA_CON_DNI = float(os.getenv("MONTO_BOLETA_CON_DNI", "700"))  # SUNAT: boletas > S/ 700
+
+    # SUNAT: API de facturación (fact_api, Laravel + Greenter) en entorno de pruebas (beta).
+    # Nada se escribe en el código: todo viene de variables de entorno.
+    SUNAT_API_URL = os.getenv("SUNAT_API_URL", "")                     # p. ej. http://127.0.0.1:8000
+    SUNAT_API_EMAIL = os.getenv("SUNAT_API_EMAIL", "")
+    SUNAT_API_PASSWORD = os.getenv("SUNAT_API_PASSWORD", "")
+    SUNAT_LOGIN_PATH = os.getenv("SUNAT_LOGIN_PATH", "/api/auth/login")
+    SUNAT_API_PREFIX = os.getenv("SUNAT_API_PREFIX", "/api/v1")
+    SUNAT_TIMEOUT = int(os.getenv("SUNAT_TIMEOUT", "30"))
+    SUNAT_COMPANY_ID = int(os.getenv("SUNAT_COMPANY_ID", "1"))
+    SUNAT_BRANCH_ID = int(os.getenv("SUNAT_BRANCH_ID", "1"))
+    SUNAT_SERIE_BOLETA = os.getenv("SUNAT_SERIE_BOLETA", "B001")
+    SUNAT_SERIE_FACTURA = os.getenv("SUNAT_SERIE_FACTURA", "F001")
+    SUNAT_REINTENTOS = int(os.getenv("SUNAT_REINTENTOS", "3"))
+    COMPROBANTES_DIR = os.getenv("COMPROBANTES_DIR", "comprobantes")

@@ -364,9 +364,9 @@ class Venta(db.Model):
     usuario_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False)
     rol_id = db.Column(db.Integer, ForeignKey("rol.id", ondelete="RESTRICT"), nullable=False)
     fecha = db.Column(db.DateTime(timezone=True), nullable=False, default=ahora)
-    # Solo nombre de referencia: no se solicita DNI/RUC porque no hay validación con RENIEC/SUNAT.
+    # Nombre o razón social del cliente: obligatorio al registrar la venta.
     cliente_nombre = db.Column(db.String(180))
-    # DNI/CE/RUC del cliente: SUNAT lo exige en boletas mayores a S/ 700 (opcional en las demás).
+    # DNI/CE/RUC del cliente: obligatorio en toda boleta o factura.
     cliente_documento = db.Column(db.String(15))
     # Método único, o "mixto" si se pagó con varios (el detalle está en venta_pago).
     metodo_pago = db.Column(db.String(30), nullable=False, default="efectivo")
@@ -385,6 +385,16 @@ class Venta(db.Model):
     autorizada_por_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="SET NULL"))
     # Caja (turno) en la que se cobró la venta
     caja_id = db.Column(db.Integer, ForeignKey("caja.id", ondelete="SET NULL"), index=True)
+    # Comprobante electrónico (SUNAT): boleta o factura, con sus archivos guardados localmente
+    tipo_comprobante = db.Column(db.String(10))      # boleta | factura
+    comprobante_serie = db.Column(db.String(10))     # B001 | F001
+    comprobante_numero = db.Column(db.String(20))
+    comprobante_api_id = db.Column(db.Integer)        # id del comprobante en la API de facturación
+    comprobante_pdf = db.Column(db.String(300))      # ruta relativa del PDF guardado
+    comprobante_xml = db.Column(db.String(300))      # ruta relativa del XML guardado
+    estado_sunat = db.Column(db.String(15), nullable=False, default="pendiente")  # pendiente | aceptado | error
+    sunat_mensaje = db.Column(db.String(300))
+    sunat_intentos = db.Column(db.Integer, nullable=False, default=0)
 
     caja = relationship("Caja", back_populates="ventas")
     usuario = relationship("Usuario", foreign_keys=[usuario_id])
@@ -430,6 +440,11 @@ class Venta(db.Model):
             "caja_id": self.caja_id,
             "caja_codigo": self.caja.codigo if self.caja else None,
             "caja_estado": self.caja.estado if self.caja else None,
+            "tipo_comprobante": self.tipo_comprobante,
+            "comprobante": f"{self.comprobante_serie}-{self.comprobante_numero}" if self.comprobante_serie else None,
+            "estado_sunat": self.estado_sunat,
+            "sunat_mensaje": self.sunat_mensaje,
+            "tiene_pdf": bool(self.comprobante_pdf),
         }
         if include_detalles:
             data["detalles"] = [d.to_dict() for d in self.detalles]

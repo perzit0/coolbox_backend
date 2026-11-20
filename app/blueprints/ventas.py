@@ -16,18 +16,20 @@ from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, send_file
 from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
 from ..services import promociones as promo_svc
 from ..extensions import db
 import re
+from pathlib import Path
 
 from ..models import Producto, Usuario, Venta, VentaDetalle, VentaPago, ahora
 from ..services.autorizacion import consumir_token
 from ..services.caja import exigir_caja_abierta
 from ..services.inventario import mover_stock
+from ..services import sunat as sunat_svc
 from .auth import _usuario_actual, require_permiso
 
 bp = Blueprint("ventas", __name__)
@@ -240,7 +242,12 @@ def crear_venta():
 
     cliente_nombre = (data.get("cliente_nombre") or "").strip()[:180] or None
     cliente_documento = re.sub(r"\D", "", str(data.get("cliente_documento") or "")) or None
-    if cliente_documento and len(cliente_documento) not in (8, 9, 11):
+    # Toda boleta o factura identifica al cliente: documento y nombre siempre son obligatorios.
+    if not cliente_documento:
+        raise ApiError("documento_requerido", "Ingrese el DNI, CE o RUC del cliente para emitir el comprobante.", 400)
+    if not cliente_nombre:
+        raise ApiError("cliente_requerido", "Ingrese el nombre o razón social del cliente.", 400)
+    if len(cliente_documento) not in (8, 9, 11):
         raise ApiError("documento_invalido", "El documento debe ser DNI (8 dígitos), CE (9) o RUC (11).", 400)
     igv_rate = Decimal(str(cfg.get("IGV_RATE", 0.18)))
 
@@ -294,11 +301,6 @@ def crear_venta():
     base = (total / (Decimal("1") + igv_rate)).quantize(CENTIMO)
     igv = (total - base).quantize(CENTIMO)
 
-    limite_dni = Decimal(str(cfg.get("MONTO_BOLETA_CON_DNI", 700)))
-    if total > limite_dni and not cliente_documento:
-        raise ApiError("documento_requerido",
-                       f"Para ventas mayores a S/ {limite_dni:.2f} la boleta debe identificar al cliente (DNI, CE o RUC).", 400)
-
     pagos = _leer_pagos(data, total)
     efectivo = next((p for p in pagos if p["metodo"] == "efectivo"), None)
 
@@ -330,7 +332,40 @@ def crear_venta():
         mover_stock(producto, -cantidad, "venta", usuario, f"Venta {venta.codigo}", venta)
 
     db.session.commit()
+
+    # Comprobante electrónico: si la API falla, la venta ya está registrada y queda pendiente de reintento.
+    try:
+        sunat_svc.emitir(venta)
+        db.session.commit()
+    except Exception as exc:  # no bloquear la venta por un fallo de facturación
+        db.session.rollback()
+        current_app.logger.error("Comprobante de %s no emitido: %s", venta.codigo, exc)
     return jsonify(venta=venta.to_dict()), 201
+
+
+@bp.post("/ventas/<int:venta_id>/comprobante")
+@jwt_required()
+def reintentar_comprobante(venta_id):
+    """Reintenta la emisión del comprobante de una venta pendiente o con error."""
+    require_permiso("caja.operar")
+    venta = db.get_or_404(Venta, venta_id)
+    if venta.estado_sunat == "aceptado":
+        return jsonify(venta=venta.to_dict())
+    sunat_svc.emitir(venta)
+    db.session.commit()
+    return jsonify(venta=venta.to_dict())
+
+
+@bp.get("/ventas/<int:venta_id>/comprobante/<formato>")
+@jwt_required()
+def descargar_comprobante(venta_id, formato):
+    """Entrega el PDF o XML guardado localmente (no vuelve a consultar la API)."""
+    require_permiso("ventas.ver")
+    venta = db.get_or_404(Venta, venta_id)
+    ruta = venta.comprobante_pdf if formato == "pdf" else venta.comprobante_xml if formato == "xml" else None
+    if not ruta or not Path(ruta).is_file():
+        raise ApiError("comprobante_no_disponible", "El comprobante aún no está disponible.", 404)
+    return send_file(Path(ruta).resolve(), as_attachment=False)
 
 
 @bp.post("/ventas/<int:venta_id>/anular")

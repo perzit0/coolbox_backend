@@ -48,6 +48,15 @@ def _columnas_nuevas(dialecto):
             "cliente_documento": "VARCHAR(15)",
             "descuento": "NUMERIC(10, 2) NOT NULL DEFAULT 0",
             "autorizada_por_id": "INTEGER",
+            "tipo_comprobante": "VARCHAR(10)",
+            "comprobante_serie": "VARCHAR(10)",
+            "comprobante_numero": "VARCHAR(20)",
+            "comprobante_api_id": "INTEGER",
+            "comprobante_pdf": "VARCHAR(300)",
+            "comprobante_xml": "VARCHAR(300)",
+            "estado_sunat": "VARCHAR(15) NOT NULL DEFAULT 'pendiente'",
+            "sunat_mensaje": "VARCHAR(300)",
+            "sunat_intentos": "INTEGER NOT NULL DEFAULT 0",
         },
         "venta_detalle": {
             "descuento": "NUMERIC(10, 2) NOT NULL DEFAULT 0",
@@ -95,3 +104,19 @@ def aplicar_migraciones_ligeras():
         if [columna] not in unicos:
             with db.engine.begin() as conn:
                 conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS {nombre} ON {tabla} ({columna})"))
+
+    _activar_rls(dialecto)
+
+
+def _activar_rls(dialecto):
+    """Supabase publica las tablas de `public` por su API REST. Con RLS activo y sin políticas,
+    esa API no puede leer ni escribir nada. El backend se conecta como dueño de las tablas,
+    así que no le afecta. Es idempotente: solo actúa en tablas que aún no tienen RLS."""
+    if dialecto != "postgresql":
+        return
+    with db.engine.begin() as conn:
+        tablas = conn.execute(text(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND NOT rowsecurity"
+        )).scalars().all()
+        for tabla in tablas:
+            conn.execute(text(f'ALTER TABLE public."{tabla}" ENABLE ROW LEVEL SECURITY'))

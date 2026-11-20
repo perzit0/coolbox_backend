@@ -39,7 +39,6 @@ Usuarios demo:
 | `LIMITE_EFECTIVO_CAJA` | Efectivo en gaveta que dispara el aviso de retiro parcial (defecto `1500`). |
 | `DESCUENTO_MAX_CAJERO` | % de descuento que el cajero aplica sin PIN (defecto `5`).              |
 | `DESCUENTO_MAX_TOTAL`  | % máximo de descuento aun con PIN (defecto `30`).                        |
-| `MONTO_BOLETA_CON_DNI` | Total desde el que se exige DNI/CE/RUC del cliente (defecto `700`, SUNAT). |
 
 ## Reglas del negocio implementadas
 
@@ -51,7 +50,7 @@ Usuarios demo:
 - **Acciones que piden PIN**: retirar o restar un producto ya registrado en el carrito, cancelar la venta en curso, descuento mayor al 5 %, anular una venta cobrada (desde la caja del cajero), retiro parcial de efectivo, reimpresión de un comprobante y cierre de caja con diferencia.
 - **Anulación de ventas**: el Supervisor de Caja y el Administrador anulan directamente (`ventas.anular`); el Cajero anula ventas de **su** caja abierta con el PIN de un supervisor.
 - **Medios de pago reales**: efectivo (recibido y vuelto), tarjeta en POS (OpenPay, Niubiz, Izipay, Culqi; débito o crédito; N° de operación del voucher), QR del POS, Yape y Plin directos (N° de operación). **Pago mixto** de hasta 3 medios; la suma debe ser exacta. Un N° de operación no puede usarse dos veces (evita capturas de Yape reutilizadas). Nunca se guarda el número de tarjeta.
-- **Cliente**: nombre y documento opcionales; para ventas mayores a S/ 700 se exige DNI, CE o RUC (regla de SUNAT para boletas).
+- **Cliente**: nombre y documento (DNI, CE o RUC) obligatorios en toda venta, porque toda boleta o factura identifica al cliente.
 - **Caja**: retiro parcial (sangría) con PIN cuando la gaveta supera el límite; **cuadre ciego** (el cajero cuenta antes de ver lo esperado); conciliación de tarjeta/QR/Yape/Plin contra el cierre del POS y los reportes de las apps; si hay diferencia se exige observación y PIN. Efectivo esperado = fondo + cobros en efectivo − retiros.
 - **Imágenes de producto**: campo `imagen_url` (URL https o foto subida como data URL, máx. ~1 MB). La columna se agrega sola en BD existentes (`app/services/schema.py`).
 - **Ventas en tienda**: al registrar una venta se descuenta stock; al anularla se devuelve stock. El código correlativo es `V-000001`.
