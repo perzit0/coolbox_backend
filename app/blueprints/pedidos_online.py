@@ -6,14 +6,20 @@ POST /api/pedidos-online/<id>/confirmar-pago   (PagoEfectivo pagado)
 POST /api/pedidos-online/<id>/listo            (preparado para recojo)
 POST /api/pedidos-online/<id>/entregar         {nro_documento}  (se valida el documento del comprador)
 POST /api/pedidos-online/<id>/cancelar         {motivo}         (el stock vuelve al inventario)
+POST /api/pedidos-online/<id>/comprobante/<tipo>            (reintenta boleta o nota de crédito)
+GET  /api/pedidos-online/<id>/comprobante/<tipo>/<formato>  (PDF o XML guardado localmente)
+
+Comprobantes: la boleta se emite cuando el pedido queda pagado. Si un pedido pagado se cancela
+(no se entregó), se emite una nota de crédito por anulación de la operación.
 """
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
 from ..extensions import db
-from ..models import Pedido, Sede, ahora
+from ..models import Pedido, PedidoComprobante, Sede, ahora
+from ..services import sunat as sunat_svc
 from ..services.inventario import mover_stock
 from .auth import _usuario_actual, require_permiso
 from .ventas import rango_fechas
@@ -97,6 +103,9 @@ def confirmar_pago(pid):
         raise ApiError("estado_invalido", "Solo se confirma el pago de pedidos pendientes de pago.", 409)
     p.estado, p.fecha_pago = "pagado", ahora()
     db.session.commit()
+    from .tienda import emitir_boleta_pedido
+
+    emitir_boleta_pedido(p)
     return jsonify(pedido=p.to_dict(), mensaje=f"Pago del pedido {p.codigo} confirmado.")
 
 
@@ -144,4 +153,63 @@ def cancelar(pid):
         raise ApiError("motivo_requerido", "Indique el motivo de la cancelación.", 400)
     _devolver_stock(p, _usuario_actual(), motivo)
     db.session.commit()
-    return jsonify(pedido=p.to_dict(), mensaje=f"Pedido {p.codigo} cancelado. El stock volvió al inventario.")
+    mensaje = f"Pedido {p.codigo} cancelado. El stock volvió al inventario."
+    # Con boleta emitida, la anulación ante SUNAT se hace con nota de crédito.
+    boleta = p.comprobante("boleta")
+    if boleta and not boleta.comprobante_api_id:
+        # La boleta nunca llegó a crearse en la API: ya no se emitirá.
+        boleta.estado_sunat, boleta.sunat_mensaje = "anulado", "Pedido cancelado antes de emitir la boleta."
+        db.session.commit()
+    elif boleta:
+        nota = PedidoComprobante(pedido_id=p.id, tipo="nota_credito", fecha=ahora(), motivo=motivo[:240])
+        db.session.add(nota)
+        db.session.commit()
+        db.session.refresh(p)
+        _emitir(nota)
+        mensaje += (
+            " Se emitió la nota de crédito."
+            if nota.estado_sunat == "aceptado"
+            else (" La nota de crédito quedó pendiente: reintente desde el pedido.")
+        )
+    return jsonify(pedido=p.to_dict(), mensaje=mensaje)
+
+
+def _emitir(comprobante):
+    try:
+        sunat_svc.emitir_pedido(comprobante)
+        db.session.commit()
+    except Exception:  # el pedido ya cambió de estado; el comprobante queda para reintentar
+        db.session.rollback()
+
+
+@bp.post("/pedidos-online/<int:pid>/comprobante/<tipo>")
+@jwt_required()
+def reintentar_comprobante(pid, tipo):
+    require_permiso(PERMISO)
+    p = _get(pid)
+    if tipo == "boleta" and p.estado in ("pagado", "listo", "entregado"):
+        from .tienda import emitir_boleta_pedido
+
+        emitir_boleta_pedido(p)
+    else:
+        comprobante = p.comprobante(tipo)
+        if not comprobante:
+            raise ApiError("comprobante_no_encontrado", "El pedido no tiene ese comprobante.", 404)
+        if comprobante.estado_sunat != "aceptado":
+            _emitir(comprobante)
+    db.session.refresh(p)
+    return jsonify(pedido=p.to_dict())
+
+
+@bp.get("/pedidos-online/<int:pid>/comprobante/<tipo>/<formato>")
+@jwt_required()
+def descargar_comprobante(pid, tipo, formato):
+    require_permiso(PERMISO)
+    comprobante = _get(pid).comprobante(tipo)
+    ruta = (
+        {"pdf": comprobante.comprobante_pdf, "xml": comprobante.comprobante_xml}.get(formato) if comprobante else None
+    )
+    archivo = sunat_svc.archivo_local(ruta)
+    if not archivo:
+        raise ApiError("comprobante_no_disponible", "El comprobante aún no está disponible.", 404)
+    return send_file(archivo, as_attachment=False)

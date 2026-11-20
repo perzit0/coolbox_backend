@@ -29,7 +29,7 @@ from ..services.caja import (
     exigir_caja_abierta,
     resumen_caja,
 )
-from .auth import _usuario_actual, require_permiso
+from .auth import _usuario_actual, _usuario_actual_o_404, require_permiso
 
 bp = Blueprint("cajas", __name__)
 
@@ -121,6 +121,7 @@ def retiro_efectivo():
 @bp.get("/cajas/denominaciones")
 @jwt_required()
 def denominaciones():
+    _usuario_actual_o_404()  # solo personal de la tienda (no sesiones de clientes)
     return jsonify(denominaciones=DENOMINACIONES)
 
 

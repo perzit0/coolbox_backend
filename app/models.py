@@ -237,9 +237,9 @@ class Producto(db.Model):
     # URL pública (https://...) o imagen subida como data URL (data:image/jpeg;base64,...)
     imagen_url = db.Column(db.Text)
 
-    familia = relationship("Familia", back_populates="productos")
-    subfamilia = relationship("Subfamilia")
-    marca = relationship("Marca")
+    familia = relationship("Familia", back_populates="productos", lazy="joined")
+    subfamilia = relationship("Subfamilia", lazy="joined")
+    marca = relationship("Marca", lazy="joined")
 
     @property
     def estado_stock(self):
@@ -411,8 +411,10 @@ class Venta(db.Model):
     anulada_por = relationship("Usuario", foreign_keys=[anulada_por_id])
     autorizada_por = relationship("Usuario", foreign_keys=[autorizada_por_id])
     rol = relationship("Rol")
-    detalles = relationship("VentaDetalle", back_populates="venta", cascade="all, delete-orphan")
-    pagos = relationship("VentaPago", back_populates="venta", cascade="all, delete-orphan", order_by="VentaPago.id")
+    detalles = relationship("VentaDetalle", back_populates="venta", cascade="all, delete-orphan", lazy="selectin")
+    pagos = relationship(
+        "VentaPago", back_populates="venta", cascade="all, delete-orphan", order_by="VentaPago.id", lazy="selectin"
+    )
     devoluciones = relationship("Devolucion", back_populates="venta", order_by="Devolucion.id", lazy="selectin")
 
     @property
@@ -502,7 +504,7 @@ class VentaDetalle(db.Model):
     promocion_nombre = db.Column(db.String(120))
 
     venta = relationship("Venta", back_populates="detalles")
-    producto = relationship("Producto")
+    producto = relationship("Producto", lazy="joined")
     devueltos = relationship("DevolucionDetalle", back_populates="venta_detalle", lazy="selectin")
 
     @property
@@ -751,6 +753,7 @@ from .models_tienda import (  # noqa: E402,F401
     Cliente,
     CodigoAcceso,
     Pedido,
+    PedidoComprobante,
     PedidoDetalle,
     Promocion,
     PromocionProducto,

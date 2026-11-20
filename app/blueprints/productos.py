@@ -12,7 +12,7 @@ from ..extensions import db
 from ..models import Familia, Marca, MovimientoStock, Producto, Subfamilia
 from ..services.catalogo import siguiente_sku
 from ..services.inventario import mover_stock
-from .auth import _usuario_actual, require_permiso
+from .auth import _usuario_actual, _usuario_actual_o_404, require_permiso
 
 bp = Blueprint("productos", __name__)
 
@@ -80,21 +80,15 @@ def _calcular_sku(subfamilia, marca):
 @bp.get("/familias")
 @jwt_required()
 def listar_familias():
+    _usuario_actual_o_404()  # solo personal de la tienda (no sesiones de clientes)
     familias = Familia.query.order_by(Familia.codigo.asc(), Familia.nombre.asc()).all()
     return jsonify(familias=[f.to_dict(include_subfamilias=True) for f in familias])
-
-
-@bp.get("/categorias")
-@jwt_required()
-def listar_categorias():
-    """Compatibilidad: las categorías ahora son las familias del SKU."""
-    familias = Familia.query.order_by(Familia.codigo.asc(), Familia.nombre.asc()).all()
-    return jsonify(categorias=[f.to_dict() for f in familias])
 
 
 @bp.get("/marcas")
 @jwt_required()
 def listar_marcas():
+    _usuario_actual_o_404()  # solo personal de la tienda (no sesiones de clientes)
     marcas = Marca.query.order_by(Marca.nombre.asc()).all()
     return jsonify(marcas=[m.to_dict() for m in marcas])
 

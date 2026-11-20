@@ -25,6 +25,8 @@ from pathlib import Path
 import requests
 from flask import current_app
 
+from .tiempo import a_local
+
 log = logging.getLogger("coolbox.sunat")
 
 # SUNAT admite hasta 10 decimales en el valor unitario; con 6 el total del comprobante
@@ -117,7 +119,8 @@ def _cuerpo_comun(serie, fecha):
         "company_id": _cfg("SUNAT_COMPANY_ID", 1),
         "branch_id": _cfg("SUNAT_BRANCH_ID", 1),
         "serie": serie,
-        "fecha_emision": fecha.strftime("%Y-%m-%d"),
+        # La fecha de emisión es la del día en Perú (la BD guarda UTC: a las 8 p. m. ya es "mañana" en UTC)
+        "fecha_emision": a_local(fecha).strftime("%Y-%m-%d"),
         "moneda": "PEN",
         "forma_pago_tipo": "Contado",
         "usuario_creacion": _cfg("SUNAT_API_EMAIL"),
@@ -169,6 +172,59 @@ def _cuerpo_nota(devolucion):
     return cuerpo
 
 
+# Documentos del comprador en la tienda online -> catálogo 06 de SUNAT
+_DOC_TIENDA = {"DNI": "1", "CE": "4", "PASAPORTE": "7"}
+
+
+def _cliente_pedido(pedido):
+    return {
+        "tipo_documento": _DOC_TIENDA.get(pedido.tipo_documento, "1"),
+        "numero_documento": pedido.nro_documento,
+        "razon_social": f"{pedido.nombres} {pedido.apellidos}"[:180],
+    }
+
+
+def _detalles_pedido(pedido):
+    factor = factor_descuento(pedido)  # reparte el cupón entre las líneas
+    return [
+        _detalle(d.producto, d.producto_id, d.cantidad, Decimal(str(d.subtotal)) / d.cantidad * factor)
+        for d in pedido.detalles
+    ]
+
+
+def _cuerpo_boleta_pedido(comprobante):
+    """Boleta de un pedido online (la tienda online solo pide DNI, CE o pasaporte)."""
+    pedido = comprobante.pedido
+    cuerpo = _cuerpo_comun(_cfg("SUNAT_SERIE_BOLETA"), comprobante.fecha)
+    cuerpo.update(
+        {
+            "tipo_operacion": "0101",
+            "metodo_envio": "individual",
+            "client": _cliente_pedido(pedido),
+            "detalles": _detalles_pedido(pedido),
+        }
+    )
+    return cuerpo
+
+
+def _cuerpo_nota_pedido(nota):
+    """Nota de crédito por anulación de un pedido pagado que no se entregó (motivo 01)."""
+    pedido = nota.pedido
+    boleta = pedido.comprobante("boleta")
+    cuerpo = _cuerpo_comun(_cfg("SUNAT_SERIE_NC_BOLETA"), nota.fecha)
+    cuerpo.update(
+        {
+            "tipo_doc_afectado": "03",
+            "num_doc_afectado": f"{boleta.comprobante_serie}-{boleta.comprobante_numero}",
+            "cod_motivo": "01",
+            "des_motivo": (nota.motivo or "Anulación del pedido")[:250],
+            "client": _cliente_pedido(pedido),
+            "detalles": _detalles_pedido(pedido),
+        }
+    )
+    return cuerpo
+
+
 def archivo_local(ruta):
     """Ruta absoluta de un comprobante guardado, solo si está dentro de COMPROBANTES_DIR
     (evita que una ruta manipulada en la BD entregue otros archivos del servidor)."""
@@ -183,7 +239,9 @@ def archivo_local(ruta):
 
 
 def _carpeta(fecha, nombre):
-    ruta = Path(_cfg("COMPROBANTES_DIR")) / nombre / fecha.strftime("%Y-%m") / fecha.strftime("%d")
+    """comprobantes/<tipo>/<AAAA-MM>/<DD>/ según la fecha local del comprobante."""
+    local = a_local(fecha)
+    ruta = Path(_cfg("COMPROBANTES_DIR")) / nombre / local.strftime("%Y-%m") / local.strftime("%d")
     ruta.mkdir(parents=True, exist_ok=True)
     return ruta
 
@@ -274,3 +332,9 @@ def emitir(venta):
 def emitir_nota_credito(devolucion):
     """Nota de crédito de una devolución."""
     return _emitir(devolucion, "nota_credito", lambda: _cuerpo_nota(devolucion))
+
+
+def emitir_pedido(comprobante):
+    """Boleta o nota de crédito de un pedido online (fila de PedidoComprobante)."""
+    armar = _cuerpo_boleta_pedido if comprobante.tipo == "boleta" else _cuerpo_nota_pedido
+    return _emitir(comprobante, comprobante.tipo, lambda: armar(comprobante))

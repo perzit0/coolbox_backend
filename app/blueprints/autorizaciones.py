@@ -14,7 +14,7 @@ from ..extensions import limiter
 from ..models import Autorizacion, Usuario
 from ..services import autorizacion as svc
 from ..services.caja import caja_abierta_de
-from .auth import _usuario_actual, require_permiso
+from .auth import _usuario_actual, _usuario_actual_o_404, require_permiso
 
 bp = Blueprint("autorizaciones", __name__)
 
@@ -22,6 +22,7 @@ bp = Blueprint("autorizaciones", __name__)
 @bp.get("/autorizaciones/catalogo")
 @jwt_required()
 def catalogo():
+    _usuario_actual_o_404()  # solo personal de la tienda (no sesiones de clientes)
     return jsonify(
         acciones=[{"codigo": k, "nombre": v} for k, v in svc.ACCIONES.items()],
         motivos=[{"codigo": k, "nombre": v} for k, v in svc.MOTIVOS.items()],

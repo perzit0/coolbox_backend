@@ -85,6 +85,8 @@ class Config:
     PROXIES_CONFIABLES = _entero("PROXIES_CONFIABLES", 1)
     # Tamaño máximo de una petición (las fotos de producto viajan en base64)
     MAX_CONTENT_LENGTH = _entero("MAX_PETICION_MB", 3) * 1024 * 1024
+    COMPRESS_MIMETYPES = ["application/json", "text/html"]
+    COMPRESS_MIN_SIZE = 1024
     # Límite de intentos por IP en ingreso, PIN y códigos (formato de Flask-Limiter)
     LIMITE_LOGIN = _texto("LIMITE_LOGIN", "10 per minute")
     LIMITE_CONSULTAS = _texto("LIMITE_CONSULTAS", "30 per minute")
@@ -113,6 +115,7 @@ class Config:
     IGV_RATE = _decimal("IGV_RATE", 0.18)
     ZONA_HORARIA_HORAS = _entero("ZONA_HORARIA_HORAS", -5)  # Perú: UTC-5 todo el año
     IMAGEN_MAX_KB = _entero("IMAGEN_MAX_KB", 1100)
+    CACHE_CATALOGO_SEGUNDOS = _entero("CACHE_CATALOGO_SEGUNDOS", 60)
     # Caja
     CUADRE_CIEGO = _bool("CUADRE_CIEGO", True)
     LIMITE_EFECTIVO_CAJA = _decimal("LIMITE_EFECTIVO_CAJA", 1500)

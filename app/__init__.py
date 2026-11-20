@@ -1,7 +1,7 @@
 from flask import Flask, request
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from .extensions import cors, db, jwt, limiter, migrate
+from .extensions import compress, cors, db, jwt, limiter, migrate
 from .errors import register_error_handlers
 
 
@@ -19,6 +19,7 @@ def create_app(config_object="config.Config"):
     migrate.init_app(app, db)
     jwt.init_app(app)
     limiter.init_app(app)
+    compress.init_app(app)
 
     # ---- CORS: solo los orígenes del frontend configurados en FRONTEND_ORIGIN ----
     raw_origin = app.config.get("FRONTEND_ORIGIN") or ""
@@ -59,7 +60,17 @@ def create_app(config_object="config.Config"):
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
-        if request.path.startswith("/api/"):
+        if (
+            request.method == "GET"
+            and request.path.startswith("/api/tienda/")
+            and not request.path.startswith("/api/tienda/pedidos")  # datos personales: nunca en caché
+            and response.status_code == 200
+            and "Authorization" not in request.headers
+        ):
+            # Catálogo público de la tienda: el navegador puede reutilizarlo unos segundos.
+            segundos = app.config.get("CACHE_CATALOGO_SEGUNDOS", 60)
+            response.headers.setdefault("Cache-Control", f"public, max-age={segundos}")
+        elif request.path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")
         if request.is_secure:
             response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")

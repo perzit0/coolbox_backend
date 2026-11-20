@@ -12,7 +12,7 @@ Clientes (cualquier correo: Gmail, Outlook, Hotmail, Yahoo...):
     POST /api/clientes/registro | /login | /google | /codigo | /codigo/verificar
     GET/PUT /api/clientes/me     GET /api/clientes/me/pedidos
 Pedidos (recojo en sede):
-    POST /api/tienda/pedidos                -> compra (como invitado o con sesión)
+    POST /api/tienda/pedidos                -> compra (requiere cuenta de cliente; emite boleta si está pagado)
     GET  /api/tienda/pedidos/<codigo>?email= -> seguimiento
 """
 
@@ -25,7 +25,7 @@ import urllib.request
 from datetime import timedelta
 from decimal import Decimal
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, send_file
 from flask_jwt_extended import create_access_token, get_jwt, get_jwt_identity, jwt_required, verify_jwt_in_request
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
@@ -39,6 +39,7 @@ from ..models import (
     Familia,
     Marca,
     Pedido,
+    PedidoComprobante,
     PedidoDetalle,
     Producto,
     Sede,
@@ -49,6 +50,7 @@ from ..models import (
 from ..services import correo
 from ..services import promociones as promo_svc
 from ..services.inventario import mover_stock
+from ..services import sunat as sunat_svc
 from ..services.pagos import MARCAS_TARJETA
 
 bp = Blueprint("tienda", __name__)
@@ -523,7 +525,8 @@ def registro():
         raise ApiError("email_registrado", "Ya existe una cuenta con ese correo. Inicia sesión.", 409)
     # Un correo con compras como invitado no se reclama solo con una contraseña nueva:
     # quien registre la cuenta debe probar que es dueño del correo (código por correo).
-    if cliente and cliente.pedidos and not cliente.email_verificado:
+    # (Solo si el envío de códigos está configurado; sin correo no habría forma de probarlo.)
+    if cliente and cliente.pedidos and not cliente.email_verificado and correo.disponible():
         raise ApiError(
             "verificar_correo", "Ese correo ya tiene compras. Ingresa con el código que te enviamos por correo.", 409
         )
@@ -676,11 +679,32 @@ def mis_pedidos():
 # ------------------------------------------------------------------ pedidos
 
 
+def emitir_boleta_pedido(pedido):
+    """Crea (si no existe) y emite la boleta del pedido pagado. No interrumpe el flujo si falla."""
+    boleta = pedido.comprobante("boleta")
+    if boleta is None:
+        boleta = PedidoComprobante(pedido_id=pedido.id, tipo="boleta", fecha=pedido.fecha_pago or ahora())
+        db.session.add(boleta)
+        db.session.flush()
+        db.session.refresh(pedido)
+    if boleta.estado_sunat == "aceptado":
+        return boleta
+    try:
+        sunat_svc.emitir_pedido(boleta)
+        db.session.commit()
+    except Exception as exc:  # la venta online ya está registrada
+        db.session.rollback()
+        current_app.logger.error("Boleta del pedido %s no emitida: %s", pedido.codigo, exc)
+    return boleta
+
+
 @bp.post("/tienda/pedidos")
+@jwt_required()
 def crear_pedido():
+    """Solo clientes con cuenta: el pedido, su boleta y su seguimiento quedan en la cuenta."""
     data = request.get_json(silent=True) or {}
-    cliente = _cliente_actual(opcional=True)
-    email = cliente.email if cliente else _email(data.get("email"))
+    cliente = _cliente_actual()
+    email = cliente.email
     perfil = _validar_perfil(data)
     if not data.get("acepta_terminos"):
         raise ApiError(
@@ -702,19 +726,9 @@ def crear_pedido():
             "pago_invalido", f"Ingresa el número de operación de {metodo.capitalize()} (6 a 12 dígitos).", 400
         )
 
-    # Cliente: con sesión se usa su cuenta; como invitado se busca o crea por correo.
-    if not cliente:
-        cliente = Cliente.query.filter_by(email=email).first()
-        if not cliente:
-            cliente = Cliente(email=email)
-            db.session.add(cliente)
-        es_cuenta = bool(cliente.password_hash or cliente.google_sub)
-    else:
-        es_cuenta = True
-    # El perfil solo se actualiza si es su sesión o si es un registro de invitado (sin contraseña)
-    if not es_cuenta or _cliente_actual(opcional=True):
-        for k, v in perfil.items():
-            setattr(cliente, k, v)
+    # Los datos del checkout actualizan el perfil de la cuenta
+    for k, v in perfil.items():
+        setattr(cliente, k, v)
     cliente.acepta_terminos = True
     if data.get("acepta_promociones"):
         cliente.acepta_promociones = True
@@ -774,6 +788,9 @@ def crear_pedido():
         # Se separa el stock para la sede desde que se hace el pedido
         mover_stock(p, -it["cantidad"], "pedido_web", None, f"Pedido online {pedido.codigo} (recojo en {sede.nombre})")
     db.session.commit()
+    # Pagado con tarjeta, Yape o Plin: se emite la boleta. Si la API falla, el pedido queda y se reintenta.
+    if pedido.estado == "pagado":
+        emitir_boleta_pedido(pedido)
     if correo.disponible():
         try:
             correo.enviar(
@@ -795,3 +812,19 @@ def ver_pedido(codigo):
     if not pedido or not (pedido.email == email or (cliente and cliente.id == pedido.cliente_id)):
         raise ApiError("pedido_no_encontrado", "No encontramos un pedido con ese código y correo.", 404)
     return jsonify(pedido=pedido.to_dict())
+
+
+@bp.get("/clientes/me/pedidos/<codigo>/comprobante/<tipo>/<formato>")
+@jwt_required()
+def descargar_comprobante_pedido(codigo, tipo, formato):
+    """El cliente descarga la boleta (o nota de crédito) de SU pedido, guardada localmente."""
+    cliente = _cliente_actual()
+    pedido = Pedido.query.filter_by(codigo=codigo.upper(), cliente_id=cliente.id).first()
+    comprobante = pedido.comprobante(tipo) if pedido else None
+    ruta = None
+    if comprobante:
+        ruta = {"pdf": comprobante.comprobante_pdf, "xml": comprobante.comprobante_xml}.get(formato)
+    archivo = sunat_svc.archivo_local(ruta)
+    if not archivo:
+        raise ApiError("comprobante_no_disponible", "El comprobante aún no está disponible.", 404)
+    return send_file(archivo, as_attachment=False)

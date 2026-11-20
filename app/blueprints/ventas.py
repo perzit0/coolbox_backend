@@ -522,12 +522,3 @@ def anular_venta(venta_id):
     venta.motivo_anulacion = motivo[:240]
     db.session.commit()
     return jsonify(venta=venta.to_dict())
-
-
-@bp.get("/ventas/reporte/resumen")
-@jwt_required()
-def reporte_resumen_compat():
-    """Compatibilidad con versiones anteriores: delega en /reportes/resumen."""
-    from .reportes import resumen
-
-    return resumen()

@@ -12,7 +12,7 @@
 - Pedido: compra online con recojo en sede.
 """
 
-from sqlalchemy import CheckConstraint, ForeignKey
+from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -189,7 +189,7 @@ class PromocionProducto(db.Model):
     precio_especial = db.Column(db.Numeric(10, 2))  # solo para el tipo PRECIO_ESPECIAL
 
     promocion = relationship("Promocion", back_populates="productos")
-    producto = relationship("Producto")
+    producto = relationship("Producto", lazy="joined")
 
     def to_dict(self):
         p = self.producto
@@ -250,6 +250,12 @@ class Pedido(db.Model):
     sede = relationship("Sede")
     entregado_por = relationship("Usuario")
     detalles = relationship("PedidoDetalle", back_populates="pedido", cascade="all, delete-orphan")
+    comprobantes = relationship(
+        "PedidoComprobante", back_populates="pedido", cascade="all, delete-orphan", order_by="PedidoComprobante.id"
+    )
+
+    def comprobante(self, tipo):
+        return next((c for c in self.comprobantes if c.tipo == tipo), None)
 
     def to_dict(self, include_detalles=True):
         d = {
@@ -284,10 +290,54 @@ class Pedido(db.Model):
             "entregado_por": self.entregado_por.nombre_completo if self.entregado_por else None,
             "motivo_cancelacion": self.motivo_cancelacion,
             "cantidad_items": sum(d.cantidad for d in self.detalles),
+            "comprobantes": [c.to_dict() for c in self.comprobantes],
         }
         if include_detalles:
             d["detalles"] = [x.to_dict() for x in self.detalles]
         return d
+
+
+class PedidoComprobante(db.Model):
+    """Comprobante electrónico de un pedido online: la boleta al quedar pagado y, si el pedido
+    pagado se cancela, la nota de crédito que la anula. Una fila por documento (tabla aparte
+    para no repetir columnas en el pedido). Los nombres de columna son los mismos que en
+    Venta y Devolucion para usar el mismo servicio SUNAT."""
+
+    __tablename__ = "pedido_comprobante"
+    __table_args__ = (UniqueConstraint("pedido_id", "tipo", name="uq_pedido_comprobante_tipo"),)
+    TIPOS = ("boleta", "nota_credito")
+
+    id = db.Column(db.Integer, primary_key=True)
+    pedido_id = db.Column(db.Integer, ForeignKey("pedido.id", ondelete="CASCADE"), nullable=False, index=True)
+    tipo = db.Column(db.String(15), nullable=False)
+    fecha = db.Column(db.DateTime(timezone=True), nullable=False, default=ahora)
+    motivo = db.Column(db.String(240))  # solo nota de crédito
+    comprobante_serie = db.Column(db.String(10))
+    comprobante_numero = db.Column(db.String(20))
+    comprobante_api_id = db.Column(db.Integer)
+    comprobante_pdf = db.Column(db.String(300))
+    comprobante_xml = db.Column(db.String(300))
+    estado_sunat = db.Column(db.String(15), nullable=False, default="pendiente")
+    sunat_mensaje = db.Column(db.String(300))
+    sunat_intentos = db.Column(db.Integer, nullable=False, default=0)
+
+    pedido = relationship("Pedido", back_populates="comprobantes")
+
+    @property
+    def codigo(self):
+        return f"{self.pedido.codigo}-{'NC' if self.tipo == 'nota_credito' else 'BV'}"
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "tipo": self.tipo,
+            "numero": f"{self.comprobante_serie}-{self.comprobante_numero}" if self.comprobante_serie else None,
+            "estado_sunat": self.estado_sunat,
+            "sunat_mensaje": self.sunat_mensaje,
+            "tiene_pdf": bool(self.comprobante_pdf),
+            "tiene_xml": bool(self.comprobante_xml),
+            "fecha": iso(self.fecha),
+        }
 
 
 class PedidoDetalle(db.Model):
@@ -303,7 +353,7 @@ class PedidoDetalle(db.Model):
     promocion_nombre = db.Column(db.String(120))
 
     pedido = relationship("Pedido", back_populates="detalles")
-    producto = relationship("Producto")
+    producto = relationship("Producto", lazy="joined")
 
     def to_dict(self):
         p = self.producto
