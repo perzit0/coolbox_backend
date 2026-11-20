@@ -61,9 +61,13 @@ METODOS_ELECTRONICOS = ("tarjeta", "qr", "yape", "plin")
 def resumen_caja(caja):
     """Totales del turno: cobros por método de pago, retiros y efectivo esperado.
 
-    Efectivo esperado = fondo inicial + cobros en efectivo (netos de vuelto) - retiros.
+    Efectivo esperado = fondo inicial + cobros en efectivo (netos de vuelto)
+                        - devoluciones pagadas en efectivo - retiros.
     Las ventas anuladas no suman (su dinero se devolvió al cliente).
     Con pago mixto, cada parte suma en su propio método.
+    Las devoluciones restan en el método con el que se reembolsó (en la caja donde se
+    atendió, que puede ser otra que la de la venta): así el total de tarjeta, QR, Yape o
+    Plin cuadra con el cierre del POS o de la app, que ya muestra el extorno.
     """
     from flask import current_app
     por_metodo = {}
@@ -85,9 +89,21 @@ def resumen_caja(caja):
             fila["ventas"] += 1
             fila["total"] += monto
 
-    retiros = sum((Decimal(str(m.monto)) for m in caja.movimientos if m.tipo == "retiro"), Decimal("0"))
     efectivo_ventas = por_metodo.get("efectivo", {}).get("total", Decimal("0"))
-    esperado = (Decimal(str(caja.monto_apertura)) + efectivo_ventas - retiros).quantize(CENTIMO)
+    total_devuelto = Decimal("0")
+    devuelto_efectivo = Decimal("0")
+    for d in caja.devoluciones:
+        monto = Decimal(str(d.total))
+        total_devuelto += monto
+        if d.metodo_reembolso == "efectivo":
+            devuelto_efectivo += monto
+        fila = por_metodo.setdefault(d.metodo_reembolso, {"metodo": d.metodo_reembolso, "ventas": 0,
+                                                          "total": Decimal("0")})
+        fila["total"] -= monto
+        fila["devuelto"] = fila.get("devuelto", Decimal("0")) + monto
+
+    retiros = sum((Decimal(str(m.monto)) for m in caja.movimientos if m.tipo == "retiro"), Decimal("0"))
+    esperado = (Decimal(str(caja.monto_apertura)) + efectivo_ventas - devuelto_efectivo - retiros).quantize(CENTIMO)
     limite = Decimal(str(current_app.config.get("LIMITE_EFECTIVO_CAJA", 1500)))
     return {
         "ventas_completadas": completadas,
@@ -96,12 +112,16 @@ def resumen_caja(caja):
         "total_anulado": float(total_anulado.quantize(CENTIMO)),
         "total_descuentos": float(total_descuentos.quantize(CENTIMO)),
         "efectivo_ventas": float(efectivo_ventas.quantize(CENTIMO)),
+        "devoluciones": len(caja.devoluciones),
+        "total_devuelto": float(total_devuelto.quantize(CENTIMO)),
+        "devuelto_efectivo": float(devuelto_efectivo.quantize(CENTIMO)),
         "retiros": float(retiros.quantize(CENTIMO)),
         "efectivo_esperado": float(esperado),
         "limite_efectivo": float(limite),
         "requiere_retiro": esperado > limite,
         "por_metodo": [
-            {"metodo": f["metodo"], "ventas": f["ventas"], "total": float(f["total"].quantize(CENTIMO))}
+            {"metodo": f["metodo"], "ventas": f["ventas"], "total": float(f["total"].quantize(CENTIMO)),
+             "devuelto": float(f.get("devuelto", Decimal("0")).quantize(CENTIMO))}
             for f in sorted(por_metodo.values(), key=lambda f: f["total"], reverse=True)
         ],
     }
@@ -126,6 +146,7 @@ def caja_con_resumen(caja, include_ventas=False, ciego=False):
     data["conteo"] = json.loads(caja.conteo_json) if caja.conteo_json else None
     data["conciliacion"] = json.loads(caja.conciliacion_json) if caja.conciliacion_json else None
     data["retiros"] = [m.to_dict() for m in caja.movimientos]
+    data["devoluciones"] = [{k: v for k, v in d.to_dict().items() if k != "detalles"} for d in caja.devoluciones]
     if include_ventas:
         data["ventas"] = [v.to_dict(include_detalles=False) for v in caja.ventas]
         from ..models import Autorizacion

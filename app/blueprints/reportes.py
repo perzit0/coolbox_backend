@@ -14,7 +14,7 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required
 from sqlalchemy.orm import joinedload
 
-from ..models import Producto, Venta, VentaDetalle
+from ..models import Devolucion, Producto, Venta, VentaDetalle
 from .auth import require_permiso
 from .ventas import ZONA_LIMA, rango_fechas
 
@@ -47,6 +47,9 @@ def resumen():
     total = sum((Decimal(v.total) for v in completadas), Decimal("0"))
     igv = sum((Decimal(v.igv) for v in completadas), Decimal("0"))
     unidades = sum(d.cantidad for v in completadas for d in v.detalles)
+    # Devoluciones atendidas en el periodo (notas de crédito): restan del total neto
+    devoluciones = Devolucion.query.filter(Devolucion.fecha >= inicio, Devolucion.fecha < fin).all()
+    monto_devuelto = sum((Decimal(str(d.total)) for d in devoluciones), Decimal("0"))
 
     # Ventas por día (todos los días del rango, aunque no haya ventas)
     por_dia = defaultdict(lambda: {"total": Decimal("0"), "ventas": 0})
@@ -127,6 +130,9 @@ def resumen():
             "cajas_abiertas": sum(1 for c in cajas if c.estado == "abierta"),
             "cajas_con_diferencia": sum(1 for c in cajas if c.estado == "cerrada" and Decimal(c.diferencia or 0) != 0),
             "descuentos": float(sum((Decimal(v.descuento or 0) for v in completadas), Decimal("0"))),
+            "devoluciones": len(devoluciones),
+            "monto_devuelto": float(monto_devuelto),
+            "total_neto": float(total - monto_devuelto),
         },
         por_dia=serie_dias,
         por_metodo=[{"metodo": k, "total": float(x["total"]), "ventas": x["ventas"]} for k, x in ordenar(por_metodo)],

@@ -61,5 +61,11 @@ class Config:
     SUNAT_BRANCH_ID = int(os.getenv("SUNAT_BRANCH_ID", "1"))
     SUNAT_SERIE_BOLETA = os.getenv("SUNAT_SERIE_BOLETA", "B001")
     SUNAT_SERIE_FACTURA = os.getenv("SUNAT_SERIE_FACTURA", "F001")
+    # Notas de crédito: la serie empieza con B si modifica una boleta y con F si modifica una factura.
+    SUNAT_SERIE_NC_BOLETA = os.getenv("SUNAT_SERIE_NC_BOLETA", "BC01")
+    SUNAT_SERIE_NC_FACTURA = os.getenv("SUNAT_SERIE_NC_FACTURA", "FC01")
     SUNAT_REINTENTOS = int(os.getenv("SUNAT_REINTENTOS", "3"))
     COMPROBANTES_DIR = os.getenv("COMPROBANTES_DIR", "comprobantes")
+
+    # Devoluciones: días desde la compra en que se aceptan (política de la tienda).
+    DEVOLUCION_DIAS_MAX = int(os.getenv("DEVOLUCION_DIAS_MAX", "7"))

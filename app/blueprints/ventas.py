@@ -393,6 +393,9 @@ def anular_venta(venta_id):
         raise ApiError("venta_no_encontrada", "La venta no existe.", 404)
     if venta.estado == "anulada":
         raise ApiError("venta_anulada", "La venta ya se encuentra anulada.", 409)
+    if venta.devoluciones:
+        raise ApiError("venta_con_devoluciones",
+                       "La venta tiene devoluciones con nota de crédito; registre el resto como otra devolución.", 409)
     # Solo se anula mientras la caja del turno siga abierta: después del arqueo
     # el dinero ya se entregó y el caso se trata como devolución.
     if venta.caja and venta.caja.estado == "cerrada":

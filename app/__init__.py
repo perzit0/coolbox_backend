@@ -81,9 +81,10 @@ def create_app(config_object="config.Config"):
     from .blueprints.tienda import bp as tienda_bp
     from .blueprints.promociones import bp as promociones_bp
     from .blueprints.pedidos_online import bp as pedidos_online_bp
+    from .blueprints.devoluciones import bp as devoluciones_bp
 
     for blueprint in (auth_bp, usuarios_bp, roles_bp, productos_bp, ventas_bp, reportes_bp, cajas_bp,
-                      autorizaciones_bp, tienda_bp, promociones_bp, pedidos_online_bp):
+                      autorizaciones_bp, tienda_bp, promociones_bp, pedidos_online_bp, devoluciones_bp):
         app.register_blueprint(blueprint, url_prefix="/api")
 
     # Auto-seed en el primer arranque (útil para Render + Supabase, ya que

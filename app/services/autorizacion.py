@@ -38,6 +38,7 @@ ACCIONES = {
     "RETIRO_EFECTIVO": "Retiro parcial de efectivo",
     "CIERRE_DIFERENCIA": "Cerrar caja con diferencia",
     "REIMPRESION": "Reimprimir un comprobante",
+    "DEVOLUCION": "Devolución de productos con nota de crédito",
 }
 ACCIONES_INMEDIATAS = {"ANULAR_ITEM", "VACIAR_CARRITO", "REIMPRESION"}
 

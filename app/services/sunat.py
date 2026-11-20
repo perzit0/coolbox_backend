@@ -1,15 +1,20 @@
-"""Emisión de boletas y facturas electrónicas con la API de facturación (fact_api, Laravel + Greenter).
+"""Emisión de comprobantes electrónicos con la API de facturación (fact_api, Laravel + Greenter).
 
-Flujo por comprobante (requerimiento del profesor):
+Documentos: boleta (DNI/CE), factura (RUC) y nota de crédito (devoluciones).
+
+Flujo por documento (requerimiento del profesor):
   1. Login en la API (token Bearer).
-  2. POST /boletas | /invoices          -> crea el comprobante (devuelve id, serie y correlativo).
-  3. POST /{id}/send-sunat              -> firma y envía a la SUNAT (entorno beta).
-  4. POST /{id}/generate-pdf            -> genera el PDF.
-  5. GET  /{id}/download-pdf | download-xml -> se guardan en comprobantes/<tipo>s/<AAAA-MM>/<DD>/.
+  2. POST /boletas | /invoices | /credit-notes -> crea el documento (id, serie y correlativo).
+  3. POST /{id}/send-sunat                     -> firma y envía a la SUNAT (entorno beta).
+  4. POST /{id}/generate-pdf                   -> genera el PDF.
+  5. GET  /{id}/download-pdf | download-xml    -> se guardan en comprobantes/<tipo>/<AAAA-MM>/<DD>/.
 La ruta de los archivos queda en la base de datos y las consultas posteriores leen el archivo local.
 
-Si un paso falla, el id del comprobante en la API se conserva en la venta y el reintento continúa desde
-ese punto, sin crear un comprobante duplicado (los correlativos de la SUNAT no se pueden reutilizar).
+Si un paso falla, el id del documento en la API se conserva y el reintento continúa desde ese
+punto, sin crear un documento duplicado (los correlativos de la SUNAT no se pueden reutilizar).
+
+Venta y Devolucion comparten los nombres de columnas del comprobante (comprobante_serie,
+comprobante_api_id, estado_sunat...), por eso el mismo flujo sirve para los dos.
 """
 import logging
 import re
@@ -22,7 +27,16 @@ from flask import current_app
 log = logging.getLogger("coolbox.sunat")
 
 IGV = Decimal("1.18")
-CENTIMOS = Decimal("0.01")
+# SUNAT admite hasta 10 decimales en el valor unitario; con 6 el total del comprobante
+# coincide al céntimo con lo cobrado (con 2 decimales se pierden céntimos al quitar el IGV).
+DECIMALES_VALOR = Decimal("0.000001")
+
+# documento -> (ruta en la API, carpeta local, código SUNAT del tipo de comprobante)
+DOCUMENTOS = {
+    "boleta": ("/boletas", "boletas", "03"),
+    "factura": ("/invoices", "facturas", "01"),
+    "nota_credito": ("/credit-notes", "notas_credito", "07"),
+}
 
 
 class SunatError(Exception):
@@ -61,48 +75,86 @@ def _tipo_doc_cliente(doc):
     return "6" if len(doc) == 11 else ("1" if len(doc) == 8 else "4")
 
 
-def _valor_unitario(subtotal, cantidad):
+def _valor_unitario(precio_con_igv):
     """Valor unitario SIN IGV. Los precios de Coolbox ya incluyen IGV."""
-    precio_con_igv = Decimal(str(subtotal)) / cantidad
-    return float((precio_con_igv / IGV).quantize(CENTIMOS, rounding=ROUND_HALF_UP))
+    return float((Decimal(precio_con_igv) / IGV).quantize(DECIMALES_VALOR, rounding=ROUND_HALF_UP))
 
 
-def _cuerpo_comprobante(venta, tipo, serie):
-    """Datos de la venta en el formato que espera la API."""
+def factor_descuento(venta):
+    """Proporción que reparte el descuento global de la venta entre sus líneas.
+
+    Las líneas guardan su subtotal neto de promociones; el descuento global (con PIN)
+    se aplica sobre el total. Para que el comprobante cuadre con lo cobrado, cada
+    línea se multiplica por total / suma de subtotales.
+    """
+    suma = sum((Decimal(str(d.subtotal)) for d in venta.detalles), Decimal("0"))
+    return (Decimal(str(venta.total)) / suma) if suma else Decimal("1")
+
+
+def _detalle(producto, producto_id, cantidad, precio_con_igv):
+    return {
+        "codigo": producto.sku if producto else str(producto_id),
+        "descripcion": producto.nombre if producto else "Producto",
+        "unidad": "NIU",
+        "cantidad": cantidad,
+        "mto_valor_unitario": _valor_unitario(precio_con_igv),
+        "porcentaje_igv": 18,
+        "tip_afe_igv": "10",   # gravado, operación onerosa
+    }
+
+
+def _cliente(venta):
     doc = venta.cliente_documento
-    detalles = []
-    for d in venta.detalles:
-        detalles.append({
-            "codigo": d.producto.sku if d.producto else str(d.producto_id),
-            "descripcion": d.producto.nombre if d.producto else "Producto",
-            "unidad": "NIU",
-            "cantidad": d.cantidad,
-            "mto_valor_unitario": _valor_unitario(d.subtotal, d.cantidad),
-            "porcentaje_igv": 18,
-            "tip_afe_igv": "10",   # gravado, operación onerosa
-        })
+    return {"tipo_documento": _tipo_doc_cliente(doc), "numero_documento": doc, "razon_social": venta.cliente_nombre}
+
+
+def _cuerpo_comun(serie, fecha):
     return {
         "company_id": _cfg("SUNAT_COMPANY_ID", 1),
         "branch_id": _cfg("SUNAT_BRANCH_ID", 1),
         "serie": serie,
-        "fecha_emision": venta.fecha.strftime("%Y-%m-%d"),
+        "fecha_emision": fecha.strftime("%Y-%m-%d"),
         "moneda": "PEN",
-        "tipo_operacion": "0101",
-        "metodo_envio": "individual",
         "forma_pago_tipo": "Contado",
-        "client": {
-            "tipo_documento": _tipo_doc_cliente(doc),
-            "numero_documento": doc,
-            "razon_social": venta.cliente_nombre,
-        },
-        "detalles": detalles,
         "usuario_creacion": _cfg("SUNAT_API_EMAIL"),
     }
 
 
-def _carpeta(venta, tipo):
-    f = venta.fecha
-    ruta = Path(_cfg("COMPROBANTES_DIR")) / (tipo + "s") / f.strftime("%Y-%m") / f.strftime("%d")
+def _cuerpo_comprobante(venta):
+    """Boleta o factura de una venta."""
+    tipo = venta.tipo_comprobante
+    factor = factor_descuento(venta)
+    cuerpo = _cuerpo_comun(_cfg("SUNAT_SERIE_FACTURA" if tipo == "factura" else "SUNAT_SERIE_BOLETA"), venta.fecha)
+    cuerpo.update({
+        "tipo_operacion": "0101",
+        "metodo_envio": "individual",
+        "client": _cliente(venta),
+        "detalles": [_detalle(d.producto, d.producto_id, d.cantidad,
+                              Decimal(str(d.subtotal)) / d.cantidad * factor) for d in venta.detalles],
+    })
+    return cuerpo
+
+
+def _cuerpo_nota(devolucion):
+    """Nota de crédito que modifica la boleta o factura de la venta."""
+    venta = devolucion.venta
+    es_factura = venta.tipo_comprobante == "factura"
+    cuerpo = _cuerpo_comun(_cfg("SUNAT_SERIE_NC_FACTURA" if es_factura else "SUNAT_SERIE_NC_BOLETA"),
+                           devolucion.fecha)
+    cuerpo.update({
+        "tipo_doc_afectado": "01" if es_factura else "03",
+        "num_doc_afectado": f"{venta.comprobante_serie}-{venta.comprobante_numero}",
+        "cod_motivo": devolucion.cod_motivo,
+        "des_motivo": devolucion.motivo[:250],
+        "client": _cliente(venta),
+        "detalles": [_detalle(d.venta_detalle.producto, d.venta_detalle.producto_id, d.cantidad,
+                              Decimal(str(d.monto)) / d.cantidad) for d in devolucion.detalles],
+    })
+    return cuerpo
+
+
+def _carpeta(fecha, nombre):
+    ruta = Path(_cfg("COMPROBANTES_DIR")) / nombre / fecha.strftime("%Y-%m") / fecha.strftime("%d")
     ruta.mkdir(parents=True, exist_ok=True)
     return ruta
 
@@ -115,70 +167,74 @@ def _mensaje_error(resp):
         return resp.text[:250]
 
 
-def _crear(venta, tipo, serie, headers):
-    ruta = "/invoices" if tipo == "factura" else "/boletas"
-    resp = requests.post(_url(ruta), json=_cuerpo_comprobante(venta, tipo, serie), headers=headers,
-                         timeout=_cfg("SUNAT_TIMEOUT", 30))
+def _crear(doc, ruta, cuerpo, headers):
+    resp = requests.post(_url(ruta), json=cuerpo, headers=headers, timeout=_cfg("SUNAT_TIMEOUT", 30))
     if resp.status_code >= 400:
-        raise SunatError(f"No se pudo crear el comprobante: {_mensaje_error(resp)}")
+        raise SunatError(f"No se pudo crear el documento: {_mensaje_error(resp)}")
     datos = resp.json().get("data") or {}
     if not datos.get("id"):
-        raise SunatError("La API no devolvió el id del comprobante.")
-    venta.comprobante_api_id = datos["id"]
-    venta.comprobante_serie = datos.get("serie") or serie
-    venta.comprobante_numero = str(datos.get("correlativo") or "")
-    venta.tipo_comprobante = tipo
+        raise SunatError("La API no devolvió el id del documento.")
+    doc.comprobante_api_id = datos["id"]
+    doc.comprobante_serie = datos.get("serie") or cuerpo["serie"]
+    doc.comprobante_numero = str(datos.get("correlativo") or "")
 
 
-def _enviar(venta, tipo, headers):
-    ruta = "/invoices" if tipo == "factura" else "/boletas"
-    resp = requests.post(_url(f"{ruta}/{venta.comprobante_api_id}/send-sunat"), headers=headers,
+def _enviar(doc, ruta, headers):
+    resp = requests.post(_url(f"{ruta}/{doc.comprobante_api_id}/send-sunat"), headers=headers,
                          timeout=_cfg("SUNAT_TIMEOUT", 30))
     if resp.status_code == 400 and "ya fue aceptad" in _mensaje_error(resp).lower():
         return "Aceptado por SUNAT (beta)"
     if resp.status_code >= 400:
-        raise SunatError(f"SUNAT rechazó o no recibió el comprobante: {_mensaje_error(resp)}")
+        raise SunatError(f"SUNAT rechazó o no recibió el documento: {_mensaje_error(resp)}")
     return (resp.json().get("message") or "Aceptado por SUNAT (beta)")[:300]
 
 
-def _guardar(venta, tipo, headers):
-    ruta = "/invoices" if tipo == "factura" else "/boletas"
-    base_url = _url(f"{ruta}/{venta.comprobante_api_id}")
+def _guardar(doc, ruta, carpeta_nombre, headers):
+    base_url = _url(f"{ruta}/{doc.comprobante_api_id}")
     timeout = _cfg("SUNAT_TIMEOUT", 30)
     requests.post(base_url + "/generate-pdf", headers=headers, timeout=timeout).raise_for_status()
-    carpeta = _carpeta(venta, tipo)
-    base = re.sub(r"[^A-Za-z0-9_-]", "", f"{venta.comprobante_serie}-{venta.comprobante_numero}") or venta.codigo
+    carpeta = _carpeta(doc.fecha, carpeta_nombre)
+    base = re.sub(r"[^A-Za-z0-9_-]", "", f"{doc.comprobante_serie}-{doc.comprobante_numero}") or doc.codigo
     for formato, columna in (("pdf", "comprobante_pdf"), ("xml", "comprobante_xml")):
         resp = requests.get(f"{base_url}/download-{formato}", headers=headers, timeout=timeout)
         resp.raise_for_status()
         destino = carpeta / f"{base}.{formato}"
         destino.write_bytes(resp.content)
-        setattr(venta, columna, destino.as_posix())
+        setattr(doc, columna, destino.as_posix())
+
+
+def _emitir(doc, documento, armar_cuerpo):
+    """Crea (si hace falta), envía a la SUNAT y guarda PDF y XML. El llamador hace commit."""
+    if not _cfg("SUNAT_API_URL"):
+        doc.estado_sunat, doc.sunat_mensaje = "pendiente", "API de facturación no configurada."
+        return doc
+    ruta, carpeta, _ = DOCUMENTOS[documento]
+    ultimo_error = None
+    for intento in range(1, max(_cfg("SUNAT_REINTENTOS", 3), 1) + 1):
+        doc.sunat_intentos = (doc.sunat_intentos or 0) + 1
+        try:
+            headers = _login()
+            if not doc.comprobante_api_id:
+                _crear(doc, ruta, armar_cuerpo(), headers)
+            mensaje = _enviar(doc, ruta, headers)
+            _guardar(doc, ruta, carpeta, headers)
+            doc.estado_sunat, doc.sunat_mensaje = "aceptado", mensaje
+            log.info("%s %s: %s-%s aceptado (intento %s)", documento, doc.codigo,
+                     doc.comprobante_serie, doc.comprobante_numero, intento)
+            return doc
+        except (requests.RequestException, SunatError, ValueError) as exc:
+            ultimo_error = str(exc)[:280]
+            log.warning("%s %s: intento %s fallido: %s", documento, doc.codigo, intento, ultimo_error)
+    doc.estado_sunat, doc.sunat_mensaje = "error", ultimo_error
+    return doc
 
 
 def emitir(venta):
-    """Emite el comprobante de una venta y guarda XML y PDF. Actualiza la venta (el llamador hace commit)."""
-    if not _cfg("SUNAT_API_URL"):
-        venta.estado_sunat, venta.sunat_mensaje = "pendiente", "API de facturación no configurada."
-        return venta
-    tipo = venta.tipo_comprobante or tipo_para(venta.cliente_documento)
-    serie = _cfg("SUNAT_SERIE_FACTURA" if tipo == "factura" else "SUNAT_SERIE_BOLETA")
-    ultimo_error = None
-    for intento in range(1, max(_cfg("SUNAT_REINTENTOS", 3), 1) + 1):
-        venta.sunat_intentos = (venta.sunat_intentos or 0) + 1
-        try:
-            headers = _login()
-            if not venta.comprobante_api_id:
-                _crear(venta, tipo, serie, headers)
-            mensaje = _enviar(venta, tipo, headers)
-            _guardar(venta, tipo, headers)
-            venta.estado_sunat, venta.sunat_mensaje = "aceptado", mensaje
-            log.info("Venta %s: %s %s-%s aceptada (intento %s)", venta.codigo, tipo,
-                     venta.comprobante_serie, venta.comprobante_numero, intento)
-            return venta
-        except (requests.RequestException, SunatError, ValueError) as exc:
-            ultimo_error = str(exc)[:280]
-            log.warning("Venta %s: intento %s fallido: %s", venta.codigo, intento, ultimo_error)
-    venta.tipo_comprobante = tipo
-    venta.estado_sunat, venta.sunat_mensaje = "error", ultimo_error
-    return venta
+    """Boleta o factura de una venta."""
+    venta.tipo_comprobante = venta.tipo_comprobante or tipo_para(venta.cliente_documento)
+    return _emitir(venta, venta.tipo_comprobante, lambda: _cuerpo_comprobante(venta))
+
+
+def emitir_nota_credito(devolucion):
+    """Nota de crédito de una devolución."""
+    return _emitir(devolucion, "nota_credito", lambda: _cuerpo_nota(devolucion))
