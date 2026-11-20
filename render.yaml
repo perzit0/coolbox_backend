@@ -15,7 +15,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn wsgi:app --preload --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    startCommand: gunicorn wsgi:app --preload --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
@@ -26,8 +26,10 @@ services:
         generateValue: true
       - key: JWT_SECRET_KEY
         generateValue: true
+      - key: ENTORNO
+        value: "produccion"
       - key: FRONTEND_ORIGIN
-        value: "*"
+        value: "https://coolbox-unfv.vercel.app,https://coolboxtienda.vercel.app"
       - key: EMAIL_DOMAIN
         value: "coolbox.com.pe"
       - key: IGV_RATE

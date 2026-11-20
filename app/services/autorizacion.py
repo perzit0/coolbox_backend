@@ -8,7 +8,7 @@ supervisor, quien escribe su PIN en la misma pantalla.
     1. El cajero pide la autorización: POST /api/autorizaciones
        {accion, supervisor_id, pin, motivo, comentario, venta_id?, monto?, detalle?}
     2. Si el PIN es correcto se devuelve un token de UN SOLO USO, válido
-       TOKEN_SEGUNDOS y solo para esa acción (y esa venta, si aplica).
+       PIN_TOKEN_SEGUNDOS y solo para esa acción (y esa venta, si aplica).
     3. El cajero ejecuta la acción enviando `autorizacion_token`; el backend
        consume el token (consumir_token) y registra quién autorizó.
 
@@ -16,24 +16,22 @@ Acciones "inmediatas" (ANULAR_ITEM, VACIAR_CARRITO, REIMPRESION) no cambian
 nada en el backend: quedan registradas en la bitácora en el mismo momento.
 Todo intento (aprobado o con PIN errado) queda en la tabla `autorizacion`.
 """
+
 import hashlib
 import re
 import secrets
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
+from flask import current_app
+
 from ..errors import ApiError
 from ..extensions import db
 from ..models import Autorizacion, Usuario, ahora
 
-TOKEN_SEGUNDOS = 90
-MAX_INTENTOS_PIN = 3
-MINUTOS_BLOQUEO_PIN = 5
-
 ACCIONES = {
     "ANULAR_ITEM": "Retirar un producto del carrito",
     "VACIAR_CARRITO": "Cancelar la venta en curso",
-    "DESCUENTO": "Aplicar un descuento mayor al permitido",
     "ANULAR_VENTA": "Anular una venta ya cobrada",
     "RETIRO_EFECTIVO": "Retiro parcial de efectivo",
     "CIERRE_DIFERENCIA": "Cerrar caja con diferencia",
@@ -60,12 +58,21 @@ PIN_LARGO = 6
 _PIN_DEBILES = {"123456", "654321", "012345", "543210", "123123", "121212", "112233", "456789", "987654", "123321"}
 
 
+def _cfg(clave, defecto):
+    return current_app.config.get(clave, defecto)
+
+
+def token_segundos():
+    return _cfg("PIN_TOKEN_SEGUNDOS", 90)
+
+
 def _hash(token):
     return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _aware(dt):
     from datetime import timezone
+
     if dt and dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
@@ -111,11 +118,13 @@ def solicitar(solicitante, caja, data):
     if not supervisor or supervisor.estado != "activo" or not supervisor.puede_autorizar:
         raise ApiError("supervisor_invalido", "El usuario seleccionado no puede autorizar.", 403)
     if supervisor.id == solicitante.id:
-        raise ApiError("autoautorizacion",
-                       "No puede autorizar sus propias operaciones. Llame a otro supervisor.", 403)
+        raise ApiError("autoautorizacion", "No puede autorizar sus propias operaciones. Llame a otro supervisor.", 403)
     if not supervisor.pin_hash:
-        raise ApiError("pin_no_configurado",
-                       f"{supervisor.nombres} aún no configura su PIN (Mi cuenta > PIN de autorización).", 409)
+        raise ApiError(
+            "pin_no_configurado",
+            f"{supervisor.nombres} aún no configura su PIN (Mi cuenta > PIN de autorización).",
+            409,
+        )
 
     venta_id = data.get("venta_id")
     try:
@@ -124,9 +133,15 @@ def solicitar(solicitante, caja, data):
         raise ApiError("venta_invalida", "La venta indicada no es válida.", 400)
 
     registro = Autorizacion(
-        accion=accion, solicitante_id=solicitante.id, supervisor_id=supervisor.id,
-        caja_id=caja.id if caja else None, venta_id=venta_id, monto=_monto(data.get("monto")),
-        motivo=motivo, comentario=comentario, detalle=(data.get("detalle") or "").strip()[:240] or None,
+        accion=accion,
+        solicitante_id=solicitante.id,
+        supervisor_id=supervisor.id,
+        caja_id=caja.id if caja else None,
+        venta_id=venta_id,
+        monto=_monto(data.get("monto")),
+        motivo=motivo,
+        comentario=comentario,
+        detalle=(data.get("detalle") or "").strip()[:240] or None,
     )
 
     bloqueado = _aware(supervisor.pin_bloqueado_hasta)
@@ -135,8 +150,11 @@ def solicitar(solicitante, caja, data):
         db.session.add(registro)
         db.session.commit()
         minutos = max(1, int((bloqueado - ahora()).total_seconds() // 60) + 1)
-        raise ApiError("pin_bloqueado",
-                       f"El PIN de {supervisor.nombres} está bloqueado por intentos fallidos. Intente en {minutos} min.", 423)
+        raise ApiError(
+            "pin_bloqueado",
+            f"El PIN de {supervisor.nombres} está bloqueado por intentos fallidos. Intente en {minutos} min.",
+            423,
+        )
 
     pin_ingresado = str(data.get("pin") or "")
     if not re.fullmatch(r"\d{6}", pin_ingresado):
@@ -146,16 +164,22 @@ def solicitar(solicitante, caja, data):
         supervisor.pin_intentos = (supervisor.pin_intentos or 0) + 1
         registro.resultado = "pin_invalido"
         db.session.add(registro)
-        restantes = MAX_INTENTOS_PIN - supervisor.pin_intentos
+        restantes = _cfg("PIN_MAX_INTENTOS", 3) - supervisor.pin_intentos
         if restantes <= 0:
             supervisor.pin_intentos = 0
-            supervisor.pin_bloqueado_hasta = ahora() + timedelta(minutes=MINUTOS_BLOQUEO_PIN)
+            supervisor.pin_bloqueado_hasta = ahora() + timedelta(minutes=_cfg("PIN_MINUTOS_BLOQUEO", 5))
             db.session.commit()
-            raise ApiError("pin_bloqueado",
-                           f"PIN incorrecto. El PIN de {supervisor.nombres} se bloqueó {MINUTOS_BLOQUEO_PIN} minutos.", 423)
+            raise ApiError(
+                "pin_bloqueado",
+                f"PIN incorrecto. El PIN de {supervisor.nombres} se bloqueó {_cfg('PIN_MINUTOS_BLOQUEO', 5)} minutos.",
+                423,
+            )
         db.session.commit()
-        raise ApiError("pin_incorrecto",
-                       f"PIN incorrecto. Queda{'n' if restantes > 1 else ''} {restantes} intento{'s' if restantes > 1 else ''}.", 401)
+        raise ApiError(
+            "pin_incorrecto",
+            f"PIN incorrecto. Queda{'n' if restantes > 1 else ''} {restantes} intento{'s' if restantes > 1 else ''}.",
+            401,
+        )
 
     supervisor.pin_intentos = 0
     supervisor.pin_bloqueado_hasta = None
@@ -166,7 +190,7 @@ def solicitar(solicitante, caja, data):
     else:
         token = secrets.token_urlsafe(24)
         registro.token_hash = _hash(token)
-        registro.expira_en = ahora() + timedelta(seconds=TOKEN_SEGUNDOS)
+        registro.expira_en = ahora() + timedelta(seconds=token_segundos())
     db.session.add(registro)
     db.session.commit()
     return registro, token
@@ -179,21 +203,32 @@ def consumir_token(token, accion, solicitante, venta_id=None, monto=None):
     rollback, el token vuelve a quedar disponible hasta que expire.
     """
     if not token:
-        raise ApiError("autorizacion_requerida",
-                       f"Esta acción requiere la autorización de un supervisor ({ACCIONES.get(accion, accion)}).", 403)
-    registro = (Autorizacion.query.filter_by(token_hash=_hash(str(token)), resultado="aprobada")
-                .with_for_update().first())
+        raise ApiError(
+            "autorizacion_requerida",
+            f"Esta acción requiere la autorización de un supervisor ({ACCIONES.get(accion, accion)}).",
+            403,
+        )
+    registro = (
+        Autorizacion.query.filter_by(token_hash=_hash(str(token)), resultado="aprobada").with_for_update().first()
+    )
     if not registro or registro.usada:
-        raise ApiError("autorizacion_invalida", "La autorización no es válida o ya fue usada. Solicítela de nuevo.", 403)
+        raise ApiError(
+            "autorizacion_invalida", "La autorización no es válida o ya fue usada. Solicítela de nuevo.", 403
+        )
     if registro.accion != accion or registro.solicitante_id != solicitante.id:
         raise ApiError("autorizacion_invalida", "La autorización corresponde a otra operación.", 403)
     if venta_id is not None and registro.venta_id not in (None, venta_id):
         raise ApiError("autorizacion_invalida", "La autorización corresponde a otra venta.", 403)
     if _aware(registro.expira_en) < ahora():
-        raise ApiError("autorizacion_vencida", "La autorización venció. Pida al supervisor que ingrese su PIN otra vez.", 403)
+        raise ApiError(
+            "autorizacion_vencida", "La autorización venció. Pida al supervisor que ingrese su PIN otra vez.", 403
+        )
     if monto is not None and registro.monto is not None and Decimal(str(monto)) > registro.monto:
-        raise ApiError("autorizacion_invalida",
-                       f"El supervisor autorizó hasta S/ {registro.monto}; el monto solicitado es mayor.", 403)
+        raise ApiError(
+            "autorizacion_invalida",
+            f"El supervisor autorizó hasta S/ {registro.monto}; el monto solicitado es mayor.",
+            403,
+        )
     registro.usada = True
     if venta_id is not None and registro.venta_id is None:
         registro.venta_id = venta_id

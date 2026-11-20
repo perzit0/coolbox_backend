@@ -1,12 +1,13 @@
 """Administración de promociones (solo Administrador).
 
-    GET  /api/promociones/tipos          -> tipos, botones de atajo (2x1, 3x1...), marcas y familias
-    GET  /api/promociones?estado=        -> lista (vigente | programada | vencida | desactivada)
-    GET  /api/promociones/<id>
-    POST /api/promociones                -> crear
-    PUT  /api/promociones/<id>           -> editar
-    POST /api/promociones/<id>/activar | /desactivar
+GET  /api/promociones/tipos          -> tipos, botones de atajo (2x1, 3x1...), marcas y familias
+GET  /api/promociones?estado=        -> lista (vigente | programada | vencida | desactivada)
+GET  /api/promociones/<id>
+POST /api/promociones                -> crear
+PUT  /api/promociones/<id>           -> editar
+POST /api/promociones/<id>/activar | /desactivar
 """
+
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required
 
@@ -34,10 +35,15 @@ def tipos():
     return jsonify(
         tipos=[{"codigo": k, **v} for k, v in svc.TIPOS.items()],
         presets=svc.PRESETS,
-        canales=[{"codigo": "todos", "nombre": "Tienda online y cajas"}, {"codigo": "online", "nombre": "Solo tienda online"},
-                 {"codigo": "tienda", "nombre": "Solo cajas de tienda"}],
+        canales=[
+            {"codigo": "todos", "nombre": "Tienda online y cajas"},
+            {"codigo": "online", "nombre": "Solo tienda online"},
+            {"codigo": "tienda", "nombre": "Solo cajas de tienda"},
+        ],
         marcas=[{"id": m.id, "nombre": m.nombre} for m in Marca.query.order_by(Marca.nombre).all()],
-        familias=[{"id": f.id, "codigo": f.codigo, "nombre": f.nombre} for f in Familia.query.order_by(Familia.codigo).all()],
+        familias=[
+            {"id": f.id, "codigo": f.codigo, "nombre": f.nombre} for f in Familia.query.order_by(Familia.codigo).all()
+        ],
     )
 
 
@@ -103,7 +109,9 @@ def cambiar_estado(pid, accion):
     promo = _get(pid)
     promo.activa = accion == "activar"
     db.session.commit()
-    return jsonify(promocion=promo.to_dict(), mensaje="Promoción activada." if promo.activa else "Promoción desactivada.")
+    return jsonify(
+        promocion=promo.to_dict(), mensaje="Promoción activada." if promo.activa else "Promoción desactivada."
+    )
 
 
 @bp.get("/promociones/productos")
@@ -115,12 +123,24 @@ def buscar_productos():
     consulta = Producto.query.filter(Producto.activo.is_(True))
     if q:
         like = f"%{q}%"
-        consulta = consulta.filter(db.or_(Producto.nombre.ilike(like), Producto.sku.ilike(like), Producto.codigo.ilike(like)))
+        consulta = consulta.filter(
+            db.or_(Producto.nombre.ilike(like), Producto.sku.ilike(like), Producto.codigo.ilike(like))
+        )
     if request.args.get("marca", type=int):
         consulta = consulta.filter(Producto.marca_id == request.args.get("marca", type=int))
     if request.args.get("familia", type=int):
         consulta = consulta.filter(Producto.categoria_id == request.args.get("familia", type=int))
-    return jsonify(productos=[{"id": p.id, "sku": p.sku, "nombre": p.nombre, "precio": float(p.precio),
-                               "marca": p.marca.nombre if p.marca else None, "stock": p.stock,
-                               "imagen_url": p.imagen_url}
-                              for p in consulta.order_by(Producto.nombre).limit(40).all()])
+    return jsonify(
+        productos=[
+            {
+                "id": p.id,
+                "sku": p.sku,
+                "nombre": p.nombre,
+                "precio": float(p.precio),
+                "marca": p.marca.nombre if p.marca else None,
+                "stock": p.stock,
+                "imagen_url": p.imagen_url,
+            }
+            for p in consulta.order_by(Producto.nombre).limit(40).all()
+        ]
+    )

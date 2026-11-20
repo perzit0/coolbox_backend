@@ -8,6 +8,7 @@ apellidos siguiendo la regla del equipo:
 La contraseña inicial es temporal: el usuario debe cambiarla en su primer
 ingreso (igual que al restablecerla).
 """
+
 import re
 
 from flask import Blueprint, current_app, jsonify, request
@@ -58,10 +59,15 @@ def listar_usuarios():
         query = query.filter(Usuario.estado == estado)
     if q:
         like = f"%{q}%"
-        query = query.filter(db.or_(
-            Usuario.nombres.ilike(like), Usuario.apellido_paterno.ilike(like),
-            Usuario.apellido_materno.ilike(like), Usuario.dni.ilike(like), Usuario.email.ilike(like),
-        ))
+        query = query.filter(
+            db.or_(
+                Usuario.nombres.ilike(like),
+                Usuario.apellido_paterno.ilike(like),
+                Usuario.apellido_materno.ilike(like),
+                Usuario.dni.ilike(like),
+                Usuario.email.ilike(like),
+            )
+        )
     usuarios = query.order_by(Usuario.apellido_paterno.asc(), Usuario.nombres.asc()).all()
     return jsonify(usuarios=[u.to_dict() for u in usuarios])
 
@@ -85,7 +91,10 @@ def preview_email():
     if not nombres.strip() or not ap.strip():
         return jsonify(email=None)
     email = build_email(
-        nombres, ap, am, current_app.config.get("EMAIL_DOMAIN", "coolbox.com.pe"),
+        nombres,
+        ap,
+        am,
+        current_app.config.get("EMAIL_DOMAIN", "coolbox.com.pe"),
         existe_email=lambda e: Usuario.query.filter_by(email=e).first() is not None,
     )
     return jsonify(email=email)
@@ -114,13 +123,21 @@ def crear_usuario():
 
     dominio = current_app.config.get("EMAIL_DOMAIN", "coolbox.com.pe")
     email = build_email(
-        nombres, apellido_paterno, apellido_materno, dominio,
+        nombres,
+        apellido_paterno,
+        apellido_materno,
+        dominio,
         existe_email=lambda e: Usuario.query.filter_by(email=e).first() is not None,
     )
 
     usuario = Usuario(
-        dni=dni, nombres=nombres, apellido_paterno=apellido_paterno, apellido_materno=apellido_materno,
-        email=email, telefono=telefono, direccion=direccion,
+        dni=dni,
+        nombres=nombres,
+        apellido_paterno=apellido_paterno,
+        apellido_materno=apellido_materno,
+        email=email,
+        telefono=telefono,
+        direccion=direccion,
     )
     # Contraseña: la que defina el admin (debe cumplir la política) o una temporal
     password = (data.get("password") or "").strip()
@@ -145,8 +162,11 @@ def editar_usuario(usuario_id):
     actual = _usuario_actual()
     data = request.get_json(silent=True) or {}
 
-    for campo, largo, etiqueta in (("nombres", 120, "nombres"), ("apellido_paterno", 80, "apellido paterno"),
-                                   ("apellido_materno", 80, "apellido materno")):
+    for campo, largo, etiqueta in (
+        ("nombres", 120, "nombres"),
+        ("apellido_paterno", 80, "apellido paterno"),
+        ("apellido_materno", 80, "apellido materno"),
+    ):
         if campo in data:
             setattr(usuario, campo, _texto(data, campo, largo, True, etiqueta))
     if "telefono" in data:

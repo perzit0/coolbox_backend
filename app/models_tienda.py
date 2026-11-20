@@ -11,8 +11,6 @@
   a la caja o a ambas.
 - Pedido: compra online con recojo en sede.
 """
-from datetime import timedelta
-from decimal import Decimal
 
 from sqlalchemy import CheckConstraint, ForeignKey
 from sqlalchemy.orm import relationship
@@ -28,10 +26,10 @@ class Cliente(db.Model):
     email = db.Column(db.String(160), nullable=False, unique=True, index=True)
     nombres = db.Column(db.String(120))
     apellidos = db.Column(db.String(160))
-    tipo_documento = db.Column(db.String(10))      # DNI | CE | PASAPORTE
+    tipo_documento = db.Column(db.String(10))  # DNI | CE | PASAPORTE
     nro_documento = db.Column(db.String(15))
     celular = db.Column(db.String(15))
-    password_hash = db.Column(db.String(255))      # opcional: puede entrar con Google o código
+    password_hash = db.Column(db.String(255))  # opcional: puede entrar con Google o código
     google_sub = db.Column(db.String(64), unique=True)
     acepta_terminos = db.Column(db.Boolean, nullable=False, default=False)
     acepta_promociones = db.Column(db.Boolean, nullable=False, default=False)
@@ -70,6 +68,7 @@ class Cliente(db.Model):
 
 class CodigoAcceso(db.Model):
     """Código de 6 dígitos enviado al correo del cliente para ingresar sin contraseña."""
+
     __tablename__ = "codigo_acceso"
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(160), nullable=False, index=True)
@@ -94,8 +93,14 @@ class Sede(db.Model):
 
     def to_dict(self, distancia_km=None):
         d = {
-            "id": self.id, "codigo": self.codigo, "nombre": self.nombre, "direccion": self.direccion,
-            "distrito": self.distrito, "lat": self.lat, "lng": self.lng, "horario": self.horario,
+            "id": self.id,
+            "codigo": self.codigo,
+            "nombre": self.nombre,
+            "direccion": self.direccion,
+            "distrito": self.distrito,
+            "lat": self.lat,
+            "lng": self.lng,
+            "horario": self.horario,
             "activa": self.activa,
         }
         if distancia_km is not None:
@@ -109,13 +114,13 @@ class Promocion(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     nombre = db.Column(db.String(120), nullable=False)
     descripcion = db.Column(db.String(300))
-    tipo = db.Column(db.String(20), nullable=False)         # ver services/promociones.TIPOS
-    valor = db.Column(db.Numeric(10, 2))                     # %, S/ o precio según el tipo
-    lleva = db.Column(db.Integer)                            # N de "lleva N paga M" o mínimo de unidades
-    paga = db.Column(db.Integer)                             # M de "lleva N paga M"
+    tipo = db.Column(db.String(20), nullable=False)  # ver services/promociones.TIPOS
+    valor = db.Column(db.Numeric(10, 2))  # %, S/ o precio según el tipo
+    lleva = db.Column(db.Integer)  # N de "lleva N paga M" o mínimo de unidades
+    paga = db.Column(db.Integer)  # M de "lleva N paga M"
     codigo_cupon = db.Column(db.String(30), unique=True)
-    monto_minimo = db.Column(db.Numeric(10, 2))              # cupón: compra mínima
-    patrocinador = db.Column(db.String(80))                  # marca/empresa que auspicia (Samsung, Epson...)
+    monto_minimo = db.Column(db.Numeric(10, 2))  # cupón: compra mínima
+    patrocinador = db.Column(db.String(80))  # marca/empresa que auspicia (Samsung, Epson...)
     alcance = db.Column(db.String(12), nullable=False, default="productos")  # productos | marca | familia | todo
     marca_id = db.Column(db.Integer, ForeignKey("marca.id", ondelete="SET NULL"))
     familia_id = db.Column(db.Integer, ForeignKey("categoria.id", ondelete="SET NULL"))
@@ -145,17 +150,31 @@ class Promocion(db.Model):
 
     def to_dict(self, con_productos=False):
         from .services.promociones import etiqueta
+
         d = {
-            "id": self.id, "nombre": self.nombre, "descripcion": self.descripcion, "tipo": self.tipo,
+            "id": self.id,
+            "nombre": self.nombre,
+            "descripcion": self.descripcion,
+            "tipo": self.tipo,
             "valor": float(self.valor) if self.valor is not None else None,
-            "lleva": self.lleva, "paga": self.paga, "codigo_cupon": self.codigo_cupon,
+            "lleva": self.lleva,
+            "paga": self.paga,
+            "codigo_cupon": self.codigo_cupon,
             "monto_minimo": float(self.monto_minimo) if self.monto_minimo is not None else None,
-            "patrocinador": self.patrocinador, "alcance": self.alcance,
-            "marca_id": self.marca_id, "marca": self.marca.nombre if self.marca else None,
-            "familia_id": self.familia_id, "familia": self.familia.nombre if self.familia else None,
-            "canal": self.canal, "fecha_inicio": iso(self.fecha_inicio), "fecha_fin": iso(self.fecha_fin),
-            "activa": self.activa, "destacada": self.destacada, "estado": self.estado(),
-            "etiqueta": etiqueta(self), "cantidad_productos": len(self.productos),
+            "patrocinador": self.patrocinador,
+            "alcance": self.alcance,
+            "marca_id": self.marca_id,
+            "marca": self.marca.nombre if self.marca else None,
+            "familia_id": self.familia_id,
+            "familia": self.familia.nombre if self.familia else None,
+            "canal": self.canal,
+            "fecha_inicio": iso(self.fecha_inicio),
+            "fecha_fin": iso(self.fecha_fin),
+            "activa": self.activa,
+            "destacada": self.destacada,
+            "estado": self.estado(),
+            "etiqueta": etiqueta(self),
+            "cantidad_productos": len(self.productos),
             "creado_por": self.creado_por.nombre_completo if self.creado_por else None,
         }
         if con_productos:
@@ -175,8 +194,11 @@ class PromocionProducto(db.Model):
     def to_dict(self):
         p = self.producto
         return {
-            "producto_id": self.producto_id, "sku": p.sku if p else None, "nombre": p.nombre if p else None,
-            "precio": float(p.precio) if p else None, "imagen_url": p.imagen_url if p else None,
+            "producto_id": self.producto_id,
+            "sku": p.sku if p else None,
+            "nombre": p.nombre if p else None,
+            "precio": float(p.precio) if p else None,
+            "imagen_url": p.imagen_url if p else None,
             "precio_especial": float(self.precio_especial) if self.precio_especial is not None else None,
         }
 
@@ -187,6 +209,7 @@ class Pedido(db.Model):
     Estados: pendiente_pago (PagoEfectivo sin pagar) -> pagado -> listo (preparado en la sede)
     -> entregado. También: cancelado (el stock vuelve) y vencido (CIP no pagado a tiempo).
     """
+
     __tablename__ = "pedido"
     ESTADOS = ("pendiente_pago", "pagado", "listo", "entregado", "cancelado")
     id = db.Column(db.Integer, primary_key=True)
@@ -202,7 +225,7 @@ class Pedido(db.Model):
     nro_documento = db.Column(db.String(15), nullable=False)
     celular = db.Column(db.String(15), nullable=False)
     # Importes (IGV incluido)
-    subtotal = db.Column(db.Numeric(10, 2), nullable=False)       # suma de precios regulares
+    subtotal = db.Column(db.Numeric(10, 2), nullable=False)  # suma de precios regulares
     descuento = db.Column(db.Numeric(10, 2), nullable=False, default=0)  # promociones de producto
     descuento_cupon = db.Column(db.Numeric(10, 2), nullable=False, default=0)
     cupon = db.Column(db.String(30))
@@ -210,11 +233,11 @@ class Pedido(db.Model):
     base = db.Column(db.Numeric(10, 2), nullable=False)
     igv = db.Column(db.Numeric(10, 2), nullable=False)
     # Pago
-    metodo_pago = db.Column(db.String(20), nullable=False)        # tarjeta | yape | plin | pagoefectivo
+    metodo_pago = db.Column(db.String(20), nullable=False)  # tarjeta | yape | plin | pagoefectivo
     marca_tarjeta = db.Column(db.String(20))
     ultimos4 = db.Column(db.String(4))
     nro_operacion = db.Column(db.String(30))
-    cip = db.Column(db.String(12))                                # código PagoEfectivo
+    cip = db.Column(db.String(12))  # código PagoEfectivo
     cip_expira = db.Column(db.DateTime(timezone=True))
     fecha = db.Column(db.DateTime(timezone=True), nullable=False, default=ahora, index=True)
     fecha_pago = db.Column(db.DateTime(timezone=True))
@@ -230,17 +253,33 @@ class Pedido(db.Model):
 
     def to_dict(self, include_detalles=True):
         d = {
-            "id": self.id, "codigo": self.codigo, "estado": self.estado,
-            "email": self.email, "nombres": self.nombres, "apellidos": self.apellidos,
+            "id": self.id,
+            "codigo": self.codigo,
+            "estado": self.estado,
+            "email": self.email,
+            "nombres": self.nombres,
+            "apellidos": self.apellidos,
             "cliente_nombre": f"{self.nombres} {self.apellidos}",
-            "tipo_documento": self.tipo_documento, "nro_documento": self.nro_documento, "celular": self.celular,
+            "tipo_documento": self.tipo_documento,
+            "nro_documento": self.nro_documento,
+            "celular": self.celular,
             "sede": self.sede.to_dict() if self.sede else None,
-            "subtotal": float(self.subtotal), "descuento": float(self.descuento or 0),
-            "descuento_cupon": float(self.descuento_cupon or 0), "cupon": self.cupon,
-            "total": float(self.total), "base": float(self.base), "igv": float(self.igv),
-            "metodo_pago": self.metodo_pago, "marca_tarjeta": self.marca_tarjeta, "ultimos4": self.ultimos4,
-            "nro_operacion": self.nro_operacion, "cip": self.cip, "cip_expira": iso(self.cip_expira),
-            "fecha": iso(self.fecha), "fecha_pago": iso(self.fecha_pago), "fecha_listo": iso(self.fecha_listo),
+            "subtotal": float(self.subtotal),
+            "descuento": float(self.descuento or 0),
+            "descuento_cupon": float(self.descuento_cupon or 0),
+            "cupon": self.cupon,
+            "total": float(self.total),
+            "base": float(self.base),
+            "igv": float(self.igv),
+            "metodo_pago": self.metodo_pago,
+            "marca_tarjeta": self.marca_tarjeta,
+            "ultimos4": self.ultimos4,
+            "nro_operacion": self.nro_operacion,
+            "cip": self.cip,
+            "cip_expira": iso(self.cip_expira),
+            "fecha": iso(self.fecha),
+            "fecha_pago": iso(self.fecha_pago),
+            "fecha_listo": iso(self.fecha_listo),
             "fecha_entrega": iso(self.fecha_entrega),
             "entregado_por": self.entregado_por.nombre_completo if self.entregado_por else None,
             "motivo_cancelacion": self.motivo_cancelacion,
@@ -257,9 +296,9 @@ class PedidoDetalle(db.Model):
     pedido_id = db.Column(db.Integer, ForeignKey("pedido.id", ondelete="CASCADE"), nullable=False, index=True)
     producto_id = db.Column(db.Integer, ForeignKey("producto.id", ondelete="RESTRICT"), nullable=False)
     cantidad = db.Column(db.Integer, nullable=False)
-    precio_unitario = db.Column(db.Numeric(10, 2), nullable=False)   # precio regular
+    precio_unitario = db.Column(db.Numeric(10, 2), nullable=False)  # precio regular
     descuento = db.Column(db.Numeric(10, 2), nullable=False, default=0)
-    subtotal = db.Column(db.Numeric(10, 2), nullable=False)          # neto
+    subtotal = db.Column(db.Numeric(10, 2), nullable=False)  # neto
     promocion_id = db.Column(db.Integer)
     promocion_nombre = db.Column(db.String(120))
 
@@ -269,16 +308,23 @@ class PedidoDetalle(db.Model):
     def to_dict(self):
         p = self.producto
         return {
-            "id": self.id, "producto_id": self.producto_id, "sku": p.sku if p else None,
-            "nombre": p.nombre if p else None, "marca": p.marca.nombre if p and p.marca else None,
-            "imagen_url": p.imagen_url if p else None, "cantidad": self.cantidad,
-            "precio_unitario": float(self.precio_unitario), "descuento": float(self.descuento or 0),
-            "subtotal": float(self.subtotal), "promocion_nombre": self.promocion_nombre,
+            "id": self.id,
+            "producto_id": self.producto_id,
+            "sku": p.sku if p else None,
+            "nombre": p.nombre if p else None,
+            "marca": p.marca.nombre if p and p.marca else None,
+            "imagen_url": p.imagen_url if p else None,
+            "cantidad": self.cantidad,
+            "precio_unitario": float(self.precio_unitario),
+            "descuento": float(self.descuento or 0),
+            "subtotal": float(self.subtotal),
+            "promocion_nombre": self.promocion_nombre,
         }
 
 
 def _aware(dt):
     from datetime import timezone
+
     if dt is not None and dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt

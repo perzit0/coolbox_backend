@@ -15,10 +15,10 @@ Escenario real: el cliente vuelve con su boleta y devuelve uno o varios producto
 
 La anulación (POST /ventas/<id>/anular) sigue siendo para el mismo turno, con la caja abierta.
 """
+
 import re
 from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
-from pathlib import Path
 from uuid import uuid4
 
 from flask import Blueprint, current_app, jsonify, request, send_file
@@ -29,7 +29,8 @@ from ..extensions import db
 from ..models import Devolucion, DevolucionDetalle, Venta, ahora
 from ..services import sunat as sunat_svc
 from ..services.autorizacion import consumir_token
-from ..services.caja import exigir_caja_abierta, fecha_lima, resumen_caja
+from ..services.caja import exigir_caja_abierta, resumen_caja
+from ..services.tiempo import fecha_local
 from ..services.inventario import mover_stock
 from .auth import _usuario_actual, require_permiso
 
@@ -49,11 +50,14 @@ def _validar_venta(venta):
     if venta.estado != "completada":
         raise ApiError("venta_anulada", "La venta está anulada; no hay nada que devolver.", 409)
     if venta.estado_sunat != "aceptado" or not venta.comprobante_serie:
-        raise ApiError("comprobante_requerido",
-                       "La venta no tiene boleta o factura aceptada por SUNAT. Emita el comprobante primero; "
-                       "si es del turno actual, puede anularla.", 409)
+        raise ApiError(
+            "comprobante_requerido",
+            "La venta no tiene boleta o factura aceptada por SUNAT. Emita el comprobante primero; "
+            "si es del turno actual, puede anularla.",
+            409,
+        )
     dias = current_app.config.get("DEVOLUCION_DIAS_MAX", 7)
-    if fecha_lima(ahora()) - fecha_lima(venta.fecha) > timedelta(days=dias):
+    if fecha_local(ahora()) - fecha_local(venta.fecha) > timedelta(days=dias):
         raise ApiError("plazo_vencido", f"El plazo de devolución es de {dias} días desde la compra.", 409)
 
 
@@ -106,13 +110,19 @@ def _validar_reembolso(venta, metodo, nro_operacion, total, caja):
         raise ApiError("metodo_invalido", f"El reembolso debe hacerse por un medio usado en la compra ({usados}).", 400)
     ya = sum((Decimal(str(d.total)) for d in venta.devoluciones if d.metodo_reembolso == metodo), Decimal("0"))
     if total > pagado[metodo] - ya:
-        raise ApiError("monto_excede_medio",
-                       f"Por {metodo} solo quedan S/ {pagado[metodo] - ya} por devolver. Elija otro medio.", 409)
+        raise ApiError(
+            "monto_excede_medio",
+            f"Por {metodo} solo quedan S/ {pagado[metodo] - ya} por devolver. Elija otro medio.",
+            409,
+        )
     if metodo == "efectivo":
         disponible = Decimal(str(resumen_caja(caja)["efectivo_esperado"]))
         if total > disponible:
-            raise ApiError("efectivo_insuficiente",
-                           f"La gaveta no tiene efectivo suficiente (S/ {disponible}). Use otro medio.", 409)
+            raise ApiError(
+                "efectivo_insuficiente",
+                f"La gaveta no tiene efectivo suficiente (S/ {disponible}). Use otro medio.",
+                409,
+            )
         return None
     nro = re.sub(r"\s+", "", str(nro_operacion or "")).upper()
     if not re.fullmatch(r"[A-Z0-9-]{4,30}", nro):
@@ -142,24 +152,42 @@ def crear_devolucion(venta_id):
         raise ApiError("monto_invalido", "El importe a devolver debe ser mayor a cero.", 400)
     metodo = (data.get("metodo_reembolso") or "").strip().lower()
     nro = _validar_reembolso(venta, metodo, data.get("nro_operacion"), total, caja)
-    autorizacion = consumir_token(data.get("autorizacion_token"), "DEVOLUCION", usuario, venta_id=venta.id,
-                                  monto=total)
+    autorizacion = consumir_token(data.get("autorizacion_token"), "DEVOLUCION", usuario, venta_id=venta.id, monto=total)
 
     devolucion = Devolucion(
-        codigo=f"TMP-{uuid4().hex[:16]}", venta_id=venta.id, caja_id=caja.id, usuario_id=usuario.id,
-        autorizada_por_id=autorizacion.supervisor_id, motivo=motivo[:240],
+        codigo=f"TMP-{uuid4().hex[:16]}",
+        venta_id=venta.id,
+        caja_id=caja.id,
+        usuario_id=usuario.id,
+        autorizada_por_id=autorizacion.supervisor_id,
+        motivo=motivo[:240],
         cod_motivo=MOTIVO_TOTAL if completa and not venta.devoluciones else MOTIVO_ITEM,
-        total=total, metodo_reembolso=metodo, nro_operacion=nro,
+        total=total,
+        metodo_reembolso=metodo,
+        nro_operacion=nro,
     )
     db.session.add(devolucion)
     db.session.flush()
     devolucion.codigo = f"D-{devolucion.id:06d}"
     for (det, cantidad, reingresa), monto in zip(lineas, montos):
-        db.session.add(DevolucionDetalle(devolucion_id=devolucion.id, venta_detalle_id=det.id,
-                                         cantidad=cantidad, monto=monto, reingresa_stock=reingresa))
+        db.session.add(
+            DevolucionDetalle(
+                devolucion_id=devolucion.id,
+                venta_detalle_id=det.id,
+                cantidad=cantidad,
+                monto=monto,
+                reingresa_stock=reingresa,
+            )
+        )
         if reingresa and det.producto:
-            mover_stock(det.producto, cantidad, "devolucion", usuario,
-                        f"Devolución {devolucion.codigo} de {venta.codigo}", venta)
+            mover_stock(
+                det.producto,
+                cantidad,
+                "devolucion",
+                usuario,
+                f"Devolución {devolucion.codigo} de {venta.codigo}",
+                venta,
+            )
     db.session.commit()
 
     # Nota de crédito: si la API falla, la devolución ya está registrada y queda pendiente de reintento.
@@ -192,6 +220,7 @@ def descargar_nota(devolucion_id, formato):
     require_permiso("ventas.ver")
     devolucion = db.get_or_404(Devolucion, devolucion_id)
     ruta = devolucion.comprobante_pdf if formato == "pdf" else devolucion.comprobante_xml if formato == "xml" else None
-    if not ruta or not Path(ruta).is_file():
+    archivo = sunat_svc.archivo_local(ruta)
+    if not archivo:
         raise ApiError("comprobante_no_disponible", "La nota de crédito aún no está disponible.", 404)
-    return send_file(Path(ruta).resolve(), as_attachment=False)
+    return send_file(archivo, as_attachment=False)

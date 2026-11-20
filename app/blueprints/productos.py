@@ -1,5 +1,10 @@
 """Catálogo: familias, subfamilias, marcas, productos (con SKU) y kardex."""
-from flask import Blueprint, jsonify, request
+
+import base64
+import binascii
+import re
+
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
@@ -11,24 +16,32 @@ from .auth import _usuario_actual, require_permiso
 
 bp = Blueprint("productos", __name__)
 
-# Imagen subida en base64: se limita para no inflar la BD (el frontend la reduce a ~600px).
-MAX_IMAGEN_CHARS = 1_500_000
+# Solo imágenes rasterizadas: un SVG puede llevar scripts.
+_DATA_URL = re.compile(r"^data:image/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=]+)$")
+_URL_SEGURA = re.compile(r"^https://[^\s\"'<>]{4,2000}$")
 
 
 def _validar_imagen(valor):
-    """Acepta una URL http(s) o una data URL de imagen. Vacío = sin imagen."""
+    """Acepta una URL https o una foto subida (PNG, JPEG, WebP o GIF en base64). Vacío = sin imagen.
+    El tamaño máximo se configura con IMAGEN_MAX_KB."""
     valor = (valor or "").strip()
     if not valor:
         return None
-    if valor.startswith(("http://", "https://")):
-        if len(valor) > 2000:
-            raise ApiError("imagen_invalida", "La URL de la imagen es demasiado larga.", 400)
+    if valor.startswith("https://"):
+        if not _URL_SEGURA.match(valor):
+            raise ApiError("imagen_invalida", "La URL de la imagen no es válida.", 400)
         return valor
-    if valor.startswith("data:image/") and ";base64," in valor:
-        if len(valor) > MAX_IMAGEN_CHARS:
-            raise ApiError("imagen_muy_grande", "La imagen es demasiado pesada (máximo aprox. 1 MB).", 400)
+    coincide = _DATA_URL.match(valor)
+    if coincide:
+        try:
+            datos = base64.b64decode(coincide.group(2), validate=True)
+        except (binascii.Error, ValueError):
+            raise ApiError("imagen_invalida", "El archivo de imagen está dañado.", 400)
+        maximo_kb = current_app.config.get("IMAGEN_MAX_KB", 1100)
+        if len(datos) > maximo_kb * 1024:
+            raise ApiError("imagen_muy_grande", f"La imagen es demasiado pesada (máximo {maximo_kb} KB).", 400)
         return valor
-    raise ApiError("imagen_invalida", "La imagen debe ser una URL http(s) o un archivo de imagen.", 400)
+    raise ApiError("imagen_invalida", "La imagen debe ser una URL https o un archivo PNG, JPG, WebP o GIF.", 400)
 
 
 def _numero(data, campo, tipo, minimo=0, etiqueta=None):
@@ -62,6 +75,7 @@ def _calcular_sku(subfamilia, marca):
 
 
 # ---------------------------------------------------------------- catálogo base
+
 
 @bp.get("/familias")
 @jwt_required()
@@ -116,6 +130,7 @@ def sku_preview():
 
 # ---------------------------------------------------------------- productos
 
+
 @bp.get("/productos")
 @jwt_required()
 def listar_productos():
@@ -142,12 +157,14 @@ def listar_productos():
         query = query.filter(Producto.stock <= Producto.stock_minimo)
     if q:
         like = f"%{q}%"
-        query = query.filter(db.or_(
-            Producto.nombre.ilike(like),
-            Producto.codigo.ilike(like),
-            Producto.sku.ilike(like),
-            Marca.nombre.ilike(like),
-        ))
+        query = query.filter(
+            db.or_(
+                Producto.nombre.ilike(like),
+                Producto.codigo.ilike(like),
+                Producto.sku.ilike(like),
+                Marca.nombre.ilike(like),
+            )
+        )
     productos = query.order_by(Producto.sku.asc(), Producto.nombre.asc()).all()
     return jsonify(productos=[p.to_dict() for p in productos])
 
@@ -243,6 +260,7 @@ def editar_producto(producto_id):
 
 # ---------------------------------------------------------------- stock / kardex
 
+
 @bp.post("/productos/<int:producto_id>/stock")
 @jwt_required()
 def actualizar_stock(producto_id):
@@ -281,8 +299,13 @@ def actualizar_stock(producto_id):
         mover_stock(producto, diferencia, "ajuste", usuario, motivo)
     else:
         cantidad = _numero(data, "cantidad", int, 1, "cantidad")
-        mover_stock(producto, cantidad if tipo == "entrada" else -cantidad, tipo, usuario,
-                    motivo or ("Recepción de mercadería" if tipo == "entrada" else None))
+        mover_stock(
+            producto,
+            cantidad if tipo == "entrada" else -cantidad,
+            tipo,
+            usuario,
+            motivo or ("Recepción de mercadería" if tipo == "entrada" else None),
+        )
     db.session.commit()
     return jsonify(producto=producto.to_dict())
 
@@ -292,8 +315,12 @@ def actualizar_stock(producto_id):
 def movimientos_producto(producto_id):
     require_permiso("kardex.ver")
     producto = db.get_or_404(Producto, producto_id)
-    movimientos = (MovimientoStock.query.filter_by(producto_id=producto.id)
-                   .order_by(MovimientoStock.fecha.desc(), MovimientoStock.id.desc()).limit(300).all())
+    movimientos = (
+        MovimientoStock.query.filter_by(producto_id=producto.id)
+        .order_by(MovimientoStock.fecha.desc(), MovimientoStock.id.desc())
+        .limit(300)
+        .all()
+    )
     return jsonify(producto=producto.to_dict(), movimientos=[m.to_dict() for m in movimientos])
 
 

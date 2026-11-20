@@ -1,6 +1,7 @@
 from flask import Flask, request
+from werkzeug.middleware.proxy_fix import ProxyFix
 
-from .extensions import cors, db, jwt, migrate
+from .extensions import cors, db, jwt, limiter, migrate
 from .errors import register_error_handlers
 
 
@@ -8,16 +9,25 @@ def create_app(config_object="config.Config"):
     app = Flask(__name__)
     app.config.from_object(config_object)
 
+    # Render pasa por un proxy: sin esto todas las peticiones parecen venir de la misma IP
+    # y el límite de intentos por IP no serviría.
+    proxies = app.config.get("PROXIES_CONFIABLES", 0)
+    if proxies:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=proxies, x_proto=proxies)
+
     db.init_app(app)
     migrate.init_app(app, db)
     jwt.init_app(app)
+    limiter.init_app(app)
 
-    # ---- CORS ----
-    raw_origin = app.config.get("FRONTEND_ORIGIN", "*")
-    if not raw_origin or raw_origin.strip() == "*":
+    # ---- CORS: solo los orígenes del frontend configurados en FRONTEND_ORIGIN ----
+    raw_origin = app.config.get("FRONTEND_ORIGIN") or ""
+    if raw_origin.strip() == "*":
         cors_origins = "*"
+        if app.config.get("EN_PRODUCCION"):
+            app.logger.warning("FRONTEND_ORIGIN='*': configure las URLs de Vercel para restringir el acceso.")
     else:
-        cors_origins = [o.strip() for o in raw_origin.split(",") if o.strip()]
+        cors_origins = [o.strip().rstrip("/") for o in raw_origin.split(",") if o.strip()]
 
     cors.init_app(
         app,
@@ -27,8 +37,6 @@ def create_app(config_object="config.Config"):
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     )
 
-    # Respuesta CORS explícita: si FRONTEND_ORIGIN es "*" se refleja el origen;
-    # si es una lista (p. ej. la URL de Vercel), solo se aceptan esos orígenes.
     def _origen_permitido(origin):
         if not origin:
             return None
@@ -45,6 +53,18 @@ def create_app(config_object="config.Config"):
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         return response
 
+    def _cabeceras_seguridad(response):
+        """Cabeceras recomendadas (OWASP) para una API JSON."""
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+        if request.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
+        if request.is_secure:
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        return response
+
     @app.before_request
     def handle_preflight():
         if request.method == "OPTIONS":
@@ -52,7 +72,7 @@ def create_app(config_object="config.Config"):
 
     @app.after_request
     def set_cors_headers(response):
-        return _cabeceras_cors(response)
+        return _cabeceras_seguridad(_cabeceras_cors(response))
 
     register_error_handlers(app)
 
@@ -83,8 +103,20 @@ def create_app(config_object="config.Config"):
     from .blueprints.pedidos_online import bp as pedidos_online_bp
     from .blueprints.devoluciones import bp as devoluciones_bp
 
-    for blueprint in (auth_bp, usuarios_bp, roles_bp, productos_bp, ventas_bp, reportes_bp, cajas_bp,
-                      autorizaciones_bp, tienda_bp, promociones_bp, pedidos_online_bp, devoluciones_bp):
+    for blueprint in (
+        auth_bp,
+        usuarios_bp,
+        roles_bp,
+        productos_bp,
+        ventas_bp,
+        reportes_bp,
+        cajas_bp,
+        autorizaciones_bp,
+        tienda_bp,
+        promociones_bp,
+        pedidos_online_bp,
+        devoluciones_bp,
+    ):
         app.register_blueprint(blueprint, url_prefix="/api")
 
     # Auto-seed en el primer arranque (útil para Render + Supabase, ya que
@@ -92,11 +124,14 @@ def create_app(config_object="config.Config"):
     # más el catálogo maestro tenemos un despliegue reproducible).
     with app.app_context():
         from . import models  # noqa: F401 - registra los modelos
+
         try:
             db.create_all()
             from .services.schema import aplicar_migraciones_ligeras
+
             aplicar_migraciones_ligeras()
             from scripts.seed_catalogo import seed_catalogo_maestro
+
             seed_catalogo_maestro()
         except Exception as exc:  # no bloquear el arranque si la BD no está lista
             db.session.rollback()
@@ -104,7 +139,7 @@ def create_app(config_object="config.Config"):
 
     @app.get("/")
     def root():
-        return {"servicio": "coolbox-backend", "version": "4.0.0", "estado": "ok", "docs": "/health"}
+        return {"servicio": "coolbox-backend", "estado": "ok"}
 
     @app.get("/health")
     def health():
@@ -114,6 +149,7 @@ def create_app(config_object="config.Config"):
     def health_db():
         """Verifica la conexión con la base de datos (útil para diagnosticar Render/Supabase)."""
         from sqlalchemy import text
+
         try:
             db.session.execute(text("SELECT 1"))
             return {"status": "ok", "database": "conectada"}

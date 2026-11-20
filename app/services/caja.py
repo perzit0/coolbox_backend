@@ -1,22 +1,18 @@
 """Cálculos del turno de caja (resumen, efectivo esperado y arqueo)."""
-from datetime import timedelta, timezone
+
 from decimal import Decimal
 import json
 
 from ..errors import ApiError
 from ..models import Caja
 
+from .pagos import METODOS_ELECTRONICOS  # noqa: F401  (lo importan otros módulos desde aquí)
+from .tiempo import fecha_local
+
 CENTIMO = Decimal("0.01")
-ZONA_LIMA = timezone(timedelta(hours=-5))
 
 # Denominaciones del sol peruano usadas en el arqueo (billetes y monedas)
 DENOMINACIONES = ["200", "100", "50", "20", "10", "5", "2", "1", "0.50", "0.20", "0.10"]
-
-
-def fecha_lima(dt):
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(ZONA_LIMA).date()
 
 
 def calcular_conteo(conteo):
@@ -45,17 +41,16 @@ def caja_abierta_de(usuario):
 
 def exigir_caja_abierta(usuario):
     from ..models import ahora
+
     caja = caja_abierta_de(usuario)
     if not caja:
         raise ApiError("caja_cerrada", "Debe abrir su caja antes de registrar ventas.", 409)
     # La caja se cierra el mismo día: una caja olvidada abierta de ayer no recibe ventas nuevas.
-    if fecha_lima(caja.fecha_apertura) < fecha_lima(ahora()):
-        raise ApiError("caja_vencida",
-                       f"Su caja {caja.codigo} es de un día anterior. Ciérrela con su arqueo antes de vender.", 409)
+    if fecha_local(caja.fecha_apertura) < fecha_local(ahora()):
+        raise ApiError(
+            "caja_vencida", f"Su caja {caja.codigo} es de un día anterior. Ciérrela con su arqueo antes de vender.", 409
+        )
     return caja
-
-
-METODOS_ELECTRONICOS = ("tarjeta", "qr", "yape", "plin")
 
 
 def resumen_caja(caja):
@@ -70,6 +65,7 @@ def resumen_caja(caja):
     Plin cuadra con el cierre del POS o de la app, que ya muestra el extorno.
     """
     from flask import current_app
+
     por_metodo = {}
     completadas = anuladas = 0
     total = Decimal("0")
@@ -97,8 +93,9 @@ def resumen_caja(caja):
         total_devuelto += monto
         if d.metodo_reembolso == "efectivo":
             devuelto_efectivo += monto
-        fila = por_metodo.setdefault(d.metodo_reembolso, {"metodo": d.metodo_reembolso, "ventas": 0,
-                                                          "total": Decimal("0")})
+        fila = por_metodo.setdefault(
+            d.metodo_reembolso, {"metodo": d.metodo_reembolso, "ventas": 0, "total": Decimal("0")}
+        )
         fila["total"] -= monto
         fila["devuelto"] = fila.get("devuelto", Decimal("0")) + monto
 
@@ -120,8 +117,12 @@ def resumen_caja(caja):
         "limite_efectivo": float(limite),
         "requiere_retiro": esperado > limite,
         "por_metodo": [
-            {"metodo": f["metodo"], "ventas": f["ventas"], "total": float(f["total"].quantize(CENTIMO)),
-             "devuelto": float(f.get("devuelto", Decimal("0")).quantize(CENTIMO))}
+            {
+                "metodo": f["metodo"],
+                "ventas": f["ventas"],
+                "total": float(f["total"].quantize(CENTIMO)),
+                "devuelto": float(f.get("devuelto", Decimal("0")).quantize(CENTIMO)),
+            }
             for f in sorted(por_metodo.values(), key=lambda f: f["total"], reverse=True)
         ],
     }
@@ -135,8 +136,16 @@ def ocultar_para_cuadre_ciego(data):
     for clave in ("efectivo_esperado", "efectivo_ventas"):
         r[clave] = None
     r["por_metodo"] = [m for m in r["por_metodo"] if m["metodo"] != "efectivo"] + (
-        [{"metodo": "efectivo", "ventas": next((m["ventas"] for m in r["por_metodo"] if m["metodo"] == "efectivo"), 0),
-          "total": None}] if any(m["metodo"] == "efectivo" for m in r["por_metodo"]) else [])
+        [
+            {
+                "metodo": "efectivo",
+                "ventas": next((m["ventas"] for m in r["por_metodo"] if m["metodo"] == "efectivo"), 0),
+                "total": None,
+            }
+        ]
+        if any(m["metodo"] == "efectivo" for m in r["por_metodo"])
+        else []
+    )
     return data
 
 
@@ -150,8 +159,10 @@ def caja_con_resumen(caja, include_ventas=False, ciego=False):
     if include_ventas:
         data["ventas"] = [v.to_dict(include_detalles=False) for v in caja.ventas]
         from ..models import Autorizacion
-        data["autorizaciones"] = [a.to_dict() for a in
-                                  Autorizacion.query.filter_by(caja_id=caja.id).order_by(Autorizacion.fecha).all()]
+
+        data["autorizaciones"] = [
+            a.to_dict() for a in Autorizacion.query.filter_by(caja_id=caja.id).order_by(Autorizacion.fecha).all()
+        ]
     if ciego and caja.estado == "abierta":
         ocultar_para_cuadre_ciego(data)
     return data

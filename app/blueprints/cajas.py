@@ -1,13 +1,14 @@
 """Turnos de caja del cajero.
 
-    GET  /api/cajas/mi-caja    -> caja abierta del usuario (o null) con su resumen (cuadre ciego)
-    POST /api/cajas/abrir      -> abre la caja con un fondo inicial en efectivo
-    POST /api/cajas/retiro     -> retiro parcial de efectivo (sangría) con PIN de supervisor
-    POST /api/cajas/cerrar     -> cierra la caja con el arqueo (conteo de efectivo + conciliación)
-    GET  /api/cajas/mis-cajas  -> últimos turnos del usuario
-    GET  /api/cajas/<id>       -> detalle de un turno (reporte de cierre)
-    GET  /api/cajas            -> control de cajas para el supervisor (filtros por fecha/estado/cajero)
+GET  /api/cajas/mi-caja    -> caja abierta del usuario (o null) con su resumen (cuadre ciego)
+POST /api/cajas/abrir      -> abre la caja con un fondo inicial en efectivo
+POST /api/cajas/retiro     -> retiro parcial de efectivo (sangría) con PIN de supervisor
+POST /api/cajas/cerrar     -> cierra la caja con el arqueo (conteo de efectivo + conciliación)
+GET  /api/cajas/mis-cajas  -> últimos turnos del usuario
+GET  /api/cajas/<id>       -> detalle de un turno (reporte de cierre)
+GET  /api/cajas            -> control de cajas para el supervisor (filtros por fecha/estado/cajero)
 """
+
 import json
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -19,13 +20,18 @@ from ..errors import ApiError
 from ..extensions import db
 from ..models import Caja, MovimientoCaja, Usuario, ahora
 from ..services.autorizacion import consumir_token
-from ..services.caja import (DENOMINACIONES, METODOS_ELECTRONICOS, caja_abierta_de, caja_con_resumen,
-                             calcular_conteo, exigir_caja_abierta, resumen_caja)
+from ..services.caja import (
+    DENOMINACIONES,
+    METODOS_ELECTRONICOS,
+    caja_abierta_de,
+    caja_con_resumen,
+    calcular_conteo,
+    exigir_caja_abierta,
+    resumen_caja,
+)
 from .auth import _usuario_actual, require_permiso
 
 bp = Blueprint("cajas", __name__)
-
-FONDO_MAXIMO = Decimal("5000.00")
 
 
 def _monto(valor, campo):
@@ -41,6 +47,7 @@ def _monto(valor, campo):
 def _ciego():
     """El cuadre ciego aplica a quien opera la caja, no a quien la supervisa."""
     from .auth import _rol_activo
+
     rol = _rol_activo()
     permisos = {p.codigo for p in rol.permisos} if rol else set()
     return bool(current_app.config.get("CUADRE_CIEGO", True)) and "caja.supervisar" not in permisos
@@ -67,8 +74,9 @@ def abrir_caja():
     if data.get("monto_apertura") in (None, ""):
         raise ApiError("monto_requerido", "Indique el fondo inicial de la caja.", 400)
     monto = _monto(data["monto_apertura"], "fondo inicial")
-    if monto > FONDO_MAXIMO:
-        raise ApiError("monto_invalido", f"El fondo inicial no puede superar S/ {FONDO_MAXIMO}.", 400)
+    fondo_maximo = Decimal(str(current_app.config.get("CAJA_FONDO_MAXIMO", 5000)))
+    if monto > fondo_maximo:
+        raise ApiError("monto_invalido", f"El fondo inicial no puede superar S/ {fondo_maximo}.", 400)
 
     caja = Caja(codigo=f"TMP-{uuid4().hex[:16]}", usuario_id=usuario.id, monto_apertura=monto, estado="abierta")
     db.session.add(caja)
@@ -96,10 +104,15 @@ def retiro_efectivo():
     if monto > disponible:
         raise ApiError("monto_invalido", "El retiro supera el efectivo registrado en la caja.", 400)
     autorizacion = consumir_token(data.get("autorizacion_token"), "RETIRO_EFECTIVO", usuario, monto=monto)
-    mov = MovimientoCaja(caja_id=caja.id, tipo="retiro", monto=monto,
-                         motivo=(data.get("motivo") or autorizacion.comentario or "Retiro parcial de efectivo")[:240],
-                         usuario_id=usuario.id, supervisor_id=autorizacion.supervisor_id,
-                         autorizacion_id=autorizacion.id)
+    mov = MovimientoCaja(
+        caja_id=caja.id,
+        tipo="retiro",
+        monto=monto,
+        motivo=(data.get("motivo") or autorizacion.comentario or "Retiro parcial de efectivo")[:240],
+        usuario_id=usuario.id,
+        supervisor_id=autorizacion.supervisor_id,
+        autorizacion_id=autorizacion.id,
+    )
     db.session.add(mov)
     db.session.commit()
     return jsonify(movimiento=mov.to_dict(), caja=caja_con_resumen(caja, ciego=_ciego())), 201
@@ -125,8 +138,7 @@ def cerrar_caja():
     """
     require_permiso("caja.operar")
     usuario = _usuario_actual()
-    caja = (Caja.query.filter_by(usuario_id=usuario.id, estado="abierta")
-            .with_for_update().first())
+    caja = Caja.query.filter_by(usuario_id=usuario.id, estado="abierta").with_for_update().first()
     if not caja:
         raise ApiError("caja_cerrada", "No tiene una caja abierta para cerrar.", 409)
 
@@ -138,7 +150,9 @@ def cerrar_caja():
 
     # Conciliación de medios electrónicos (lo que dice el POS / la app vs. el sistema)
     declarado = data.get("declarado") or {}
-    sistema = {m["metodo"]: Decimal(str(m["total"])) for m in resumen["por_metodo"] if m["metodo"] in METODOS_ELECTRONICOS}
+    sistema = {
+        m["metodo"]: Decimal(str(m["total"])) for m in resumen["por_metodo"] if m["metodo"] in METODOS_ELECTRONICOS
+    }
     conciliacion = {}
     for metodo in METODOS_ELECTRONICOS:
         valor = declarado.get(metodo)
@@ -153,8 +167,10 @@ def cerrar_caja():
     autorizacion = None
     if diferencia != 0 or dif_electronica:
         detalle = {
-            "efectivo_esperado": float(esperado), "efectivo_contado": float(contado),
-            "diferencia": float(diferencia), "conciliacion": conciliacion,
+            "efectivo_esperado": float(esperado),
+            "efectivo_contado": float(contado),
+            "diferencia": float(diferencia),
+            "conciliacion": conciliacion,
         }
         if not data.get("autorizacion_token") or len(observacion) < 10:
             partes = []
@@ -162,9 +178,12 @@ def cerrar_caja():
                 partes.append(f"{'sobrante' if diferencia > 0 else 'faltante'} de S/ {abs(diferencia)} en efectivo")
             if dif_electronica:
                 partes.append("diferencias en " + ", ".join(dif_electronica))
-            raise ApiError("diferencia_detectada",
-                           f"Hay {' y '.join(partes)}. Vuelva a contar o cierre con observación y autorización del supervisor.",
-                           409, extra={"arqueo": detalle})
+            raise ApiError(
+                "diferencia_detectada",
+                f"Hay {' y '.join(partes)}. Vuelva a contar o cierre con observación y autorización del supervisor.",
+                409,
+                extra={"arqueo": detalle},
+            )
         autorizacion = consumir_token(data.get("autorizacion_token"), "CIERRE_DIFERENCIA", usuario)
 
     caja.efectivo_esperado = esperado
@@ -184,14 +203,14 @@ def cerrar_caja():
 @jwt_required()
 def mis_cajas():
     require_permiso("caja.operar")
-    cajas = (Caja.query.filter_by(usuario_id=_usuario_actual().id)
-             .order_by(Caja.fecha_apertura.desc()).limit(15).all())
+    cajas = Caja.query.filter_by(usuario_id=_usuario_actual().id).order_by(Caja.fecha_apertura.desc()).limit(15).all()
     return jsonify(cajas=[caja_con_resumen(c) for c in cajas])
 
 
 def _puede_ver_caja(caja):
     """El dueño ve su caja; quien tenga caja.supervisar ve todas."""
     from .auth import _rol_activo
+
     rol = _rol_activo()
     permisos = {p.codigo for p in rol.permisos} if rol else set()
     if "caja.supervisar" in permisos:
@@ -215,6 +234,7 @@ def control_cajas():
     """Cajas de todos los cajeros. Parámetros: desde, hasta (AAAA-MM-DD), estado, usuario_id."""
     require_permiso("caja.supervisar")
     from .ventas import rango_fechas
+
     inicio, fin = rango_fechas(request.args.get("desde"), request.args.get("hasta"))
     query = Caja.query
     if inicio:
@@ -240,5 +260,4 @@ def control_cajas():
         "con_diferencia": sum(1 for c in cerradas if c["diferencia"] != 0),
     }
     vendedores = sorted({(c["usuario_id"], c["usuario_nombre"]) for c in data}, key=lambda x: x[1] or "")
-    return jsonify(cajas=data, indicadores=indicadores,
-                   vendedores=[{"id": i, "nombre": n} for i, n in vendedores])
+    return jsonify(cajas=data, indicadores=indicadores, vendedores=[{"id": i, "nombre": n} for i, n in vendedores])

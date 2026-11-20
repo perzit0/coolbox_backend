@@ -7,11 +7,17 @@ Ambos movimientos quedan en el kardex.
 
 Medios de pago (como en una caja real de Lima):
     efectivo  -> monto recibido y vuelto
-    tarjeta   -> POS (OpenPay, Niubiz, Izipay...), débito/crédito, N° de operación del voucher
-    qr        -> QR que muestra el POS (Yape, Plin u otra billetera), N° de operación
-    yape/plin -> pago directo al número de la tienda, N° de operación de la app
+    tarjeta   -> POS (POS_PROVEEDOR), débito/crédito y N° de operación del voucher
+    yape/plin -> QR de la tienda, N° de operación de la app
+En este proyecto el POS es de pruebas: la pantalla de caja muestra "inserte su tarjeta /
+escanee el QR" y el cajero confirma el pago; el N° de operación lo genera ese POS simulado.
 Una venta puede pagarse con varios medios (pago mixto); la suma debe ser igual al total.
+
+Precios: los fija la empresa (precio de lista y promociones vigentes). En caja no se
+aplican descuentos manuales.
 """
+
+import re
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -20,27 +26,27 @@ from flask import Blueprint, current_app, jsonify, request, send_file
 from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
-from ..services import promociones as promo_svc
-from ..extensions import db
-import re
-from pathlib import Path
-
+from ..extensions import db, limiter
 from ..models import Producto, Usuario, Venta, VentaDetalle, VentaPago, ahora
+from ..services import consulta_documento
+from ..services import promociones as promo_svc
+from ..services import sunat as sunat_svc
 from ..services.autorizacion import consumir_token
 from ..services.caja import exigir_caja_abierta
 from ..services.inventario import mover_stock
-from ..services import sunat as sunat_svc
+from ..services.pagos import MARCAS_TARJETA, METODOS_PAGO, PROVEEDORES_POS, TIPOS_TARJETA
+from ..services.tiempo import zona_local
 from .auth import _usuario_actual, require_permiso
 
 bp = Blueprint("ventas", __name__)
 
-# Perú no tiene horario de verano: UTC-5 todo el año.
-ZONA_LIMA = timezone(timedelta(hours=-5))
 CENTIMO = Decimal("0.01")
 
 
 def rango_fechas(desde_txt, hasta_txt):
-    """Convierte fechas YYYY-MM-DD (hora de Lima) a un rango UTC [inicio, fin)."""
+    """Convierte fechas YYYY-MM-DD (hora local del negocio) a un rango UTC [inicio, fin)."""
+    zona = zona_local()
+
     def parse(txt, etiqueta):
         try:
             return datetime.strptime(txt, "%Y-%m-%d").date()
@@ -49,9 +55,9 @@ def rango_fechas(desde_txt, hasta_txt):
 
     inicio = fin = None
     if desde_txt:
-        inicio = datetime.combine(parse(desde_txt, "desde"), time.min, ZONA_LIMA).astimezone(timezone.utc)
+        inicio = datetime.combine(parse(desde_txt, "desde"), time.min, zona).astimezone(timezone.utc)
     if hasta_txt:
-        fin = (datetime.combine(parse(hasta_txt, "hasta"), time.min, ZONA_LIMA) + timedelta(days=1)).astimezone(timezone.utc)
+        fin = (datetime.combine(parse(hasta_txt, "hasta"), time.min, zona) + timedelta(days=1)).astimezone(timezone.utc)
     if inicio and fin and inicio >= fin:
         raise ApiError("rango_invalido", "La fecha 'desde' debe ser anterior o igual a 'hasta'.", 400)
     return inicio, fin
@@ -76,7 +82,7 @@ def listar_ventas():
     if estado in ("completada", "anulada"):
         query = query.filter(Venta.estado == estado)
     metodo = request.args.get("metodo_pago")
-    if metodo in Venta.METODOS_PAGO:
+    if metodo in METODOS_PAGO:
         query = query.filter(db.or_(Venta.metodo_pago == metodo, Venta.pagos.any(VentaPago.metodo == metodo)))
     elif metodo == "mixto":
         query = query.filter(Venta.metodo_pago == "mixto")
@@ -86,18 +92,24 @@ def listar_ventas():
     q = (request.args.get("q") or "").strip()
     if q:
         like = f"%{q}%"
-        query = query.filter(db.or_(Venta.codigo.ilike(like), Venta.cliente_nombre.ilike(like),
-                                    Venta.cliente_documento.ilike(like),
-                                    Venta.pagos.any(VentaPago.nro_operacion.ilike(like))))
+        query = query.filter(
+            db.or_(
+                Venta.codigo.ilike(like),
+                Venta.cliente_nombre.ilike(like),
+                Venta.cliente_documento.ilike(like),
+                Venta.pagos.any(VentaPago.nro_operacion.ilike(like)),
+            )
+        )
 
     page = max(request.args.get("page", 1, type=int), 1)
     per_page = min(max(request.args.get("per_page", 20, type=int), 5), 100)
     total = query.count()
-    ventas = (query.order_by(Venta.fecha.desc(), Venta.id.desc())
-              .offset((page - 1) * per_page).limit(per_page).all())
+    ventas = query.order_by(Venta.fecha.desc(), Venta.id.desc()).offset((page - 1) * per_page).limit(per_page).all()
     return jsonify(
         ventas=[v.to_dict(include_detalles=False) for v in ventas],
-        page=page, per_page=per_page, total=total,
+        page=page,
+        per_page=per_page,
+        total=total,
         pages=max(1, -(-total // per_page)),
     )
 
@@ -120,8 +132,28 @@ def obtener_venta(venta_id):
     return jsonify(venta=venta.to_dict())
 
 
-PROVEEDORES_POS = ("OpenPay", "Niubiz", "Izipay", "Culqi", "Otro")
-MARCAS_TARJETA = ("Visa", "Mastercard", "American Express", "Diners Club")
+@bp.get("/ventas/config")
+@jwt_required()
+def config_caja():
+    """Datos que la pantalla de caja necesita del servidor (sin valores fijos en el frontend)."""
+    require_permiso("ventas.crear")
+    cfg = current_app.config
+    return jsonify(
+        pos_proveedor=cfg.get("POS_PROVEEDOR"),
+        marcas_tarjeta=list(MARCAS_TARJETA),
+        tipos_tarjeta=list(TIPOS_TARJETA),
+        igv=cfg.get("IGV_RATE"),
+        consulta_documento=bool(cfg.get("CONSULTA_TOKEN")),
+    )
+
+
+@bp.get("/ventas/consulta-documento/<numero>")
+@jwt_required()
+@limiter.limit(lambda: current_app.config["LIMITE_CONSULTAS"])
+def consultar_documento(numero):
+    """Nombre del cliente según RENIEC (DNI) o razón social según SUNAT (RUC)."""
+    require_permiso("ventas.crear")
+    return jsonify(consulta_documento.consultar(numero))
 
 
 @bp.post("/ventas/cotizar")
@@ -141,12 +173,29 @@ def cotizar_venta():
     productos = {p.id: p for p in Producto.query.filter(Producto.id.in_(cantidades.keys() or [0])).all()}
     cot = promo_svc.cotizar([(productos[pid], q) for pid, q in cantidades.items() if pid in productos], "tienda")
     return jsonify(
-        items=[{"producto_id": it["producto"].id, "cantidad": it["cantidad"], "bruto": float(it["bruto"]),
-                "descuento": float(it["descuento"]), "neto": float(it["neto"]),
-                "promocion": {"id": it["promocion"].id, "nombre": it["promocion"].nombre,
-                              "etiqueta": promo_svc.etiqueta(it["promocion"])} if it["promocion"] else None}
-               for it in cot["items"]],
-        subtotal=float(cot["subtotal"]), descuento_promociones=float(cot["descuento"]), total=float(cot["total"]))
+        items=[
+            {
+                "producto_id": it["producto"].id,
+                "cantidad": it["cantidad"],
+                "bruto": float(it["bruto"]),
+                "descuento": float(it["descuento"]),
+                "neto": float(it["neto"]),
+                "promocion": (
+                    {
+                        "id": it["promocion"].id,
+                        "nombre": it["promocion"].nombre,
+                        "etiqueta": promo_svc.etiqueta(it["promocion"]),
+                    }
+                    if it["promocion"]
+                    else None
+                ),
+            }
+            for it in cot["items"]
+        ],
+        subtotal=float(cot["subtotal"]),
+        descuento_promociones=float(cot["descuento"]),
+        total=float(cot["total"]),
+    )
 
 
 def _decimal(valor, mensaje):
@@ -164,22 +213,36 @@ def _leer_pagos(data, total):
     """
     pagos = data.get("pagos")
     if not pagos:
-        pagos = [{"metodo": data.get("metodo_pago") or "efectivo", "monto": str(total),
-                  "monto_recibido": data.get("monto_recibido"), "nro_operacion": data.get("nro_operacion"),
-                  "proveedor": data.get("proveedor")}]
+        pagos = [
+            {
+                "metodo": data.get("metodo_pago") or "efectivo",
+                "monto": str(total),
+                "monto_recibido": data.get("monto_recibido"),
+                "nro_operacion": data.get("nro_operacion"),
+                "proveedor": data.get("proveedor"),
+            }
+        ]
     if not isinstance(pagos, list) or len(pagos) > 4:
         raise ApiError("pagos_invalidos", "Indique entre 1 y 4 medios de pago.", 400)
 
     limpios, suma, hay_efectivo = [], Decimal("0"), False
     for p in pagos:
         metodo = (p.get("metodo") or "").strip().lower()
-        if metodo not in Venta.METODOS_PAGO:
+        if metodo not in METODOS_PAGO:
             raise ApiError("metodo_invalido", "Método de pago no soportado.", 400)
         monto = _decimal(p.get("monto"), "Cada pago debe tener un monto numérico.")
         if monto <= 0:
             raise ApiError("monto_invalido", "Cada pago debe tener un monto mayor a cero.", 400)
-        fila = {"metodo": metodo, "monto": monto, "monto_recibido": None, "vuelto": None,
-                "proveedor": None, "tipo_tarjeta": None, "nro_operacion": None, "marca_tarjeta": None}
+        fila = {
+            "metodo": metodo,
+            "monto": monto,
+            "monto_recibido": None,
+            "vuelto": None,
+            "proveedor": None,
+            "tipo_tarjeta": None,
+            "nro_operacion": None,
+            "marca_tarjeta": None,
+        }
         if metodo == "efectivo":
             if hay_efectivo:
                 raise ApiError("pagos_invalidos", "Registre el efectivo en un solo pago.", 400)
@@ -192,13 +255,17 @@ def _leer_pagos(data, total):
         else:
             nro = re.sub(r"\s+", "", str(p.get("nro_operacion") or "")).upper()
             if not re.fullmatch(r"[A-Z0-9-]{4,30}", nro):
-                raise ApiError("operacion_requerida",
-                               f"Ingrese el N° de operación del pago con {metodo} (4 a 30 caracteres, letras o números).", 400)
+                raise ApiError(
+                    "operacion_requerida",
+                    f"Ingrese el N° de operación del pago con {metodo} (4 a 30 caracteres, letras o números).",
+                    400,
+                )
             fila["nro_operacion"] = nro
             if metodo in ("tarjeta", "qr"):
-                proveedor = (p.get("proveedor") or "").strip()
+                # El POS de la tienda (configurable); se acepta otro de la lista si se indica.
+                proveedor = (p.get("proveedor") or current_app.config.get("POS_PROVEEDOR") or "").strip()
                 if proveedor not in PROVEEDORES_POS:
-                    raise ApiError("proveedor_requerido", "Seleccione el POS con el que se cobró (OpenPay, Niubiz, Izipay...).", 400)
+                    raise ApiError("proveedor_invalido", "El POS indicado no está registrado.", 400)
                 fila["proveedor"] = proveedor
             if metodo == "tarjeta":
                 marca = (p.get("marca_tarjeta") or "").strip()
@@ -206,23 +273,31 @@ def _leer_pagos(data, total):
                     raise ApiError("marca_tarjeta_invalida", "Marca de tarjeta no válida.", 400)
                 fila["marca_tarjeta"] = marca or None
                 tipo = (p.get("tipo_tarjeta") or "").strip().lower()
-                if tipo not in ("debito", "credito"):
+                if tipo not in TIPOS_TARJETA:
                     raise ApiError("tipo_tarjeta_requerido", "Indique si la tarjeta es de débito o crédito.", 400)
                 fila["tipo_tarjeta"] = tipo
             # Un mismo N° de operación no puede cobrarse dos veces (p. ej. una captura de Yape reutilizada)
-            repetido = (VentaPago.query.join(Venta)
-                        .filter(VentaPago.metodo == metodo, VentaPago.nro_operacion == nro, Venta.estado == "completada")
-                        .first())
+            repetido = (
+                VentaPago.query.join(Venta)
+                .filter(VentaPago.metodo == metodo, VentaPago.nro_operacion == nro, Venta.estado == "completada")
+                .first()
+            )
             if repetido or any(x["nro_operacion"] == nro and x["metodo"] == metodo for x in limpios):
-                raise ApiError("operacion_repetida",
-                               f"El N° de operación {nro} ya fue usado en la venta "
-                               f"{repetido.venta.codigo if repetido else 'actual'}.", 409)
+                raise ApiError(
+                    "operacion_repetida",
+                    f"El N° de operación {nro} ya fue usado en la venta "
+                    f"{repetido.venta.codigo if repetido else 'actual'}.",
+                    409,
+                )
         suma += monto
         limpios.append(fila)
 
     if suma != total:
-        raise ApiError("pagos_no_cuadran",
-                       f"La suma de los pagos (S/ {suma}) debe ser igual al total de la venta (S/ {total}).", 400)
+        raise ApiError(
+            "pagos_no_cuadran",
+            f"La suma de los pagos (S/ {suma}) debe ser igual al total de la venta (S/ {total}).",
+            400,
+        )
     return limpios
 
 
@@ -272,29 +347,36 @@ def crear_venta():
         if not producto:
             raise ApiError("producto_no_encontrado", f"El producto {pid} no existe.", 404)
         if not producto.activo:
-            raise ApiError("producto_inactivo", f"El producto {producto.sku or producto.codigo} no está disponible.", 400)
+            raise ApiError(
+                "producto_inactivo", f"El producto {producto.sku or producto.codigo} no está disponible.", 400
+            )
         if producto.stock < cantidad:
-            raise ApiError("stock_insuficiente",
-                           f"Stock insuficiente para {producto.nombre}. Disponible: {producto.stock}.", 409)
+            raise ApiError(
+                "stock_insuficiente", f"Stock insuficiente para {producto.nombre}. Disponible: {producto.stock}.", 409
+            )
     # Promociones vigentes en tienda (2x1, % de descuento, precio especial...): la mejor por línea
     cot = promo_svc.cotizar([(por_id[pid], q) for pid, q in cantidades.items()], "tienda")
-    lineas = [(it["producto"], it["cantidad"], Decimal(str(it["producto"].precio)), it["neto"], it["descuento"],
-               it["promocion"]) for it in cot["items"]]
+    lineas = [
+        (
+            it["producto"],
+            it["cantidad"],
+            Decimal(str(it["producto"].precio)),
+            it["neto"],
+            it["descuento"],
+            it["promocion"],
+        )
+        for it in cot["items"]
+    ]
     bruto = cot["total"].quantize(CENTIMO)
 
-    # Descuento global: hasta DESCUENTO_MAX_CAJERO % lo aplica el cajero; más, con PIN de supervisor.
-    descuento = Decimal("0")
-    autorizacion = None
+    # Los precios los fija la empresa (lista + promociones). La caja no aplica descuentos manuales.
     if data.get("descuento") not in (None, "", 0, "0"):
-        descuento = _decimal(data["descuento"], "El descuento debe ser numérico.")
-        if descuento < 0:
-            raise ApiError("descuento_invalido", "El descuento no puede ser negativo.", 400)
-        porcentaje = (descuento / bruto * 100) if bruto else Decimal("0")
-        if porcentaje > Decimal(str(cfg.get("DESCUENTO_MAX_TOTAL", 30))):
-            raise ApiError("descuento_invalido",
-                           f"El descuento no puede superar el {cfg.get('DESCUENTO_MAX_TOTAL', 30):g}% de la venta.", 400)
-        if porcentaje > Decimal(str(cfg.get("DESCUENTO_MAX_CAJERO", 5))):
-            autorizacion = consumir_token(data.get("autorizacion_token"), "DESCUENTO", usuario, monto=descuento)
+        raise ApiError(
+            "descuento_no_permitido",
+            "En caja no se aplican descuentos: solo rigen las promociones vigentes de la empresa.",
+            400,
+        )
+    descuento = Decimal("0")
 
     # Precios con IGV incluido (Perú): se separa la base imponible.
     total = (bruto - descuento).quantize(CENTIMO)
@@ -307,28 +389,40 @@ def crear_venta():
     venta = Venta(
         # Código provisional único: dos cajas pueden registrar ventas a la vez
         # sin chocar con la restricción UNIQUE antes de asignar el correlativo.
-        codigo=f"TMP-{uuid4().hex[:16]}", usuario_id=usuario.id, rol_id=rol.id,
-        cliente_nombre=cliente_nombre, cliente_documento=cliente_documento,
+        codigo=f"TMP-{uuid4().hex[:16]}",
+        usuario_id=usuario.id,
+        rol_id=rol.id,
+        cliente_nombre=cliente_nombre,
+        cliente_documento=cliente_documento,
         metodo_pago=pagos[0]["metodo"] if len(pagos) == 1 else "mixto",
-        descuento=descuento, subtotal=base, igv=igv, total=total,
+        descuento=descuento,
+        subtotal=base,
+        igv=igv,
+        total=total,
         monto_recibido=efectivo["monto_recibido"] if efectivo else None,
         vuelto=efectivo["vuelto"] if efectivo else None,
-        estado="completada", caja_id=caja.id,
-        autorizada_por_id=autorizacion.supervisor_id if autorizacion else None,
+        estado="completada",
+        caja_id=caja.id,
     )
     db.session.add(venta)
     db.session.flush()
     venta.codigo = f"V-{venta.id:06d}"
-    if autorizacion:
-        autorizacion.venta_id = venta.id
 
     for p in pagos:
         db.session.add(VentaPago(venta_id=venta.id, **p))
     for producto, cantidad, precio_unit, sub, desc_linea, promo in lineas:
-        db.session.add(VentaDetalle(venta_id=venta.id, producto_id=producto.id, cantidad=cantidad,
-                                    precio_unitario=precio_unit, subtotal=sub, descuento=desc_linea,
-                                    promocion_id=promo.id if promo else None,
-                                    promocion_nombre=promo.nombre if promo else None))
+        db.session.add(
+            VentaDetalle(
+                venta_id=venta.id,
+                producto_id=producto.id,
+                cantidad=cantidad,
+                precio_unitario=precio_unit,
+                subtotal=sub,
+                descuento=desc_linea,
+                promocion_id=promo.id if promo else None,
+                promocion_nombre=promo.nombre if promo else None,
+            )
+        )
         mover_stock(producto, -cantidad, "venta", usuario, f"Venta {venta.codigo}", venta)
 
     db.session.commit()
@@ -363,9 +457,10 @@ def descargar_comprobante(venta_id, formato):
     require_permiso("ventas.ver")
     venta = db.get_or_404(Venta, venta_id)
     ruta = venta.comprobante_pdf if formato == "pdf" else venta.comprobante_xml if formato == "xml" else None
-    if not ruta or not Path(ruta).is_file():
+    archivo = sunat_svc.archivo_local(ruta)
+    if not archivo:
         raise ApiError("comprobante_no_disponible", "El comprobante aún no está disponible.", 404)
-    return send_file(Path(ruta).resolve(), as_attachment=False)
+    return send_file(archivo, as_attachment=False)
 
 
 @bp.post("/ventas/<int:venta_id>/anular")
@@ -377,6 +472,7 @@ def anular_venta(venta_id):
       (`autorizacion_token`), sin salir de su sesión y sin hacer esperar a la cola.
     """
     from .auth import _rol_activo
+
     rol = _rol_activo()
     permisos = {p.codigo for p in rol.permisos} if rol else set()
     if "ventas.anular" in permisos:
@@ -394,13 +490,15 @@ def anular_venta(venta_id):
     if venta.estado == "anulada":
         raise ApiError("venta_anulada", "La venta ya se encuentra anulada.", 409)
     if venta.devoluciones:
-        raise ApiError("venta_con_devoluciones",
-                       "La venta tiene devoluciones con nota de crédito; registre el resto como otra devolución.", 409)
+        raise ApiError(
+            "venta_con_devoluciones",
+            "La venta tiene devoluciones con nota de crédito; registre el resto como otra devolución.",
+            409,
+        )
     # Solo se anula mientras la caja del turno siga abierta: después del arqueo
     # el dinero ya se entregó y el caso se trata como devolución.
     if venta.caja and venta.caja.estado == "cerrada":
-        raise ApiError("caja_cerrada",
-                       f"La caja {venta.caja.codigo} ya fue cerrada; la venta no puede anularse.", 409)
+        raise ApiError("caja_cerrada", f"La caja {venta.caja.codigo} ya fue cerrada; la venta no puede anularse.", 409)
     data = request.get_json(silent=True) or {}
     motivo = (data.get("motivo") or "").strip()
     if len(motivo) < 10:
@@ -415,8 +513,7 @@ def anular_venta(venta_id):
 
     for detalle in venta.detalles:
         if detalle.producto:
-            mover_stock(detalle.producto, detalle.cantidad, "anulacion", usuario,
-                        f"Anulación de {venta.codigo}", venta)
+            mover_stock(detalle.producto, detalle.cantidad, "anulacion", usuario, f"Anulación de {venta.codigo}", venta)
     venta.estado = "anulada"
     venta.anulada_por_id = usuario.id
     if autorizacion:
@@ -432,4 +529,5 @@ def anular_venta(venta_id):
 def reporte_resumen_compat():
     """Compatibilidad con versiones anteriores: delega en /reportes/resumen."""
     from .reportes import resumen
+
     return resumen()

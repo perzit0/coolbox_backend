@@ -16,6 +16,7 @@ punto, sin crear un documento duplicado (los correlativos de la SUNAT no se pued
 Venta y Devolucion comparten los nombres de columnas del comprobante (comprobante_serie,
 comprobante_api_id, estado_sunat...), por eso el mismo flujo sirve para los dos.
 """
+
 import logging
 import re
 from decimal import ROUND_HALF_UP, Decimal
@@ -26,7 +27,6 @@ from flask import current_app
 
 log = logging.getLogger("coolbox.sunat")
 
-IGV = Decimal("1.18")
 # SUNAT admite hasta 10 decimales en el valor unitario; con 6 el total del comprobante
 # coincide al céntimo con lo cobrado (con 2 decimales se pierden céntimos al quitar el IGV).
 DECIMALES_VALOR = Decimal("0.000001")
@@ -75,9 +75,13 @@ def _tipo_doc_cliente(doc):
     return "6" if len(doc) == 11 else ("1" if len(doc) == 8 else "4")
 
 
+def _tasa_igv():
+    return Decimal(str(_cfg("IGV_RATE", 0.18)))
+
+
 def _valor_unitario(precio_con_igv):
     """Valor unitario SIN IGV. Los precios de Coolbox ya incluyen IGV."""
-    return float((Decimal(precio_con_igv) / IGV).quantize(DECIMALES_VALOR, rounding=ROUND_HALF_UP))
+    return float((Decimal(precio_con_igv) / (1 + _tasa_igv())).quantize(DECIMALES_VALOR, rounding=ROUND_HALF_UP))
 
 
 def factor_descuento(venta):
@@ -98,8 +102,8 @@ def _detalle(producto, producto_id, cantidad, precio_con_igv):
         "unidad": "NIU",
         "cantidad": cantidad,
         "mto_valor_unitario": _valor_unitario(precio_con_igv),
-        "porcentaje_igv": 18,
-        "tip_afe_igv": "10",   # gravado, operación onerosa
+        "porcentaje_igv": float(_tasa_igv() * 100),
+        "tip_afe_igv": "10",  # gravado, operación onerosa
     }
 
 
@@ -125,13 +129,17 @@ def _cuerpo_comprobante(venta):
     tipo = venta.tipo_comprobante
     factor = factor_descuento(venta)
     cuerpo = _cuerpo_comun(_cfg("SUNAT_SERIE_FACTURA" if tipo == "factura" else "SUNAT_SERIE_BOLETA"), venta.fecha)
-    cuerpo.update({
-        "tipo_operacion": "0101",
-        "metodo_envio": "individual",
-        "client": _cliente(venta),
-        "detalles": [_detalle(d.producto, d.producto_id, d.cantidad,
-                              Decimal(str(d.subtotal)) / d.cantidad * factor) for d in venta.detalles],
-    })
+    cuerpo.update(
+        {
+            "tipo_operacion": "0101",
+            "metodo_envio": "individual",
+            "client": _cliente(venta),
+            "detalles": [
+                _detalle(d.producto, d.producto_id, d.cantidad, Decimal(str(d.subtotal)) / d.cantidad * factor)
+                for d in venta.detalles
+            ],
+        }
+    )
     return cuerpo
 
 
@@ -139,18 +147,39 @@ def _cuerpo_nota(devolucion):
     """Nota de crédito que modifica la boleta o factura de la venta."""
     venta = devolucion.venta
     es_factura = venta.tipo_comprobante == "factura"
-    cuerpo = _cuerpo_comun(_cfg("SUNAT_SERIE_NC_FACTURA" if es_factura else "SUNAT_SERIE_NC_BOLETA"),
-                           devolucion.fecha)
-    cuerpo.update({
-        "tipo_doc_afectado": "01" if es_factura else "03",
-        "num_doc_afectado": f"{venta.comprobante_serie}-{venta.comprobante_numero}",
-        "cod_motivo": devolucion.cod_motivo,
-        "des_motivo": devolucion.motivo[:250],
-        "client": _cliente(venta),
-        "detalles": [_detalle(d.venta_detalle.producto, d.venta_detalle.producto_id, d.cantidad,
-                              Decimal(str(d.monto)) / d.cantidad) for d in devolucion.detalles],
-    })
+    cuerpo = _cuerpo_comun(_cfg("SUNAT_SERIE_NC_FACTURA" if es_factura else "SUNAT_SERIE_NC_BOLETA"), devolucion.fecha)
+    cuerpo.update(
+        {
+            "tipo_doc_afectado": "01" if es_factura else "03",
+            "num_doc_afectado": f"{venta.comprobante_serie}-{venta.comprobante_numero}",
+            "cod_motivo": devolucion.cod_motivo,
+            "des_motivo": devolucion.motivo[:250],
+            "client": _cliente(venta),
+            "detalles": [
+                _detalle(
+                    d.venta_detalle.producto,
+                    d.venta_detalle.producto_id,
+                    d.cantidad,
+                    Decimal(str(d.monto)) / d.cantidad,
+                )
+                for d in devolucion.detalles
+            ],
+        }
+    )
     return cuerpo
+
+
+def archivo_local(ruta):
+    """Ruta absoluta de un comprobante guardado, solo si está dentro de COMPROBANTES_DIR
+    (evita que una ruta manipulada en la BD entregue otros archivos del servidor)."""
+    if not ruta:
+        return None
+    base = Path(_cfg("COMPROBANTES_DIR")).resolve()
+    archivo = Path(ruta).resolve()
+    if base != archivo and base not in archivo.parents:
+        log.warning("Ruta de comprobante fuera de %s: %s", base, ruta)
+        return None
+    return archivo if archivo.is_file() else None
 
 
 def _carpeta(fecha, nombre):
@@ -180,8 +209,9 @@ def _crear(doc, ruta, cuerpo, headers):
 
 
 def _enviar(doc, ruta, headers):
-    resp = requests.post(_url(f"{ruta}/{doc.comprobante_api_id}/send-sunat"), headers=headers,
-                         timeout=_cfg("SUNAT_TIMEOUT", 30))
+    resp = requests.post(
+        _url(f"{ruta}/{doc.comprobante_api_id}/send-sunat"), headers=headers, timeout=_cfg("SUNAT_TIMEOUT", 30)
+    )
     if resp.status_code == 400 and "ya fue aceptad" in _mensaje_error(resp).lower():
         return "Aceptado por SUNAT (beta)"
     if resp.status_code >= 400:
@@ -219,8 +249,14 @@ def _emitir(doc, documento, armar_cuerpo):
             mensaje = _enviar(doc, ruta, headers)
             _guardar(doc, ruta, carpeta, headers)
             doc.estado_sunat, doc.sunat_mensaje = "aceptado", mensaje
-            log.info("%s %s: %s-%s aceptado (intento %s)", documento, doc.codigo,
-                     doc.comprobante_serie, doc.comprobante_numero, intento)
+            log.info(
+                "%s %s: %s-%s aceptado (intento %s)",
+                documento,
+                doc.codigo,
+                doc.comprobante_serie,
+                doc.comprobante_numero,
+                intento,
+            )
             return doc
         except (requests.RequestException, SunatError, ValueError) as exc:
             ultimo_error = str(exc)[:280]

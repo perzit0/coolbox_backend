@@ -1,4 +1,5 @@
 """Operaciones de stock con registro automático en el kardex."""
+
 from ..errors import ApiError
 from ..extensions import db
 from ..models import MovimientoStock

@@ -26,65 +26,116 @@ Reglas:
 - Las familias avanzan de 10 en 10 para dejar espacio a nuevas familias
   intermedias sin reordenar códigos.
 """
+
 import re
 
 FAMILIAS = [
     # codigo, nombre, descripcion, subfamilias [(codigo, nombre)]
-    ("10", "Laptops", "Computadoras portátiles para hogar, oficina y gaming", [
-        ("01", "Uso personal y oficina"),
-        ("02", "Laptops gamer"),
-        ("03", "Ultradelgadas y premium"),
-    ]),
+    (
+        "10",
+        "Laptops",
+        "Computadoras portátiles para hogar, oficina y gaming",
+        [
+            ("01", "Uso personal y oficina"),
+            ("02", "Laptops gamer"),
+            ("03", "Ultradelgadas y premium"),
+        ],
+    ),
     # Familia intermedia (por eso las familias avanzan de 10 en 10)
-    ("15", "Impresoras y Conectividad", "Impresoras, antenas satelitales y redes Wi-Fi", [
-        ("01", "Impresoras de tinta continua"),
-        ("02", "Impresoras láser"),
-        ("03", "Internet satelital y Wi-Fi"),
-    ]),
-    ("20", "Celulares", "Smartphones de todas las gamas", [
-        ("01", "Gama de entrada"),
-        ("02", "Gama media"),
-        ("03", "Gama alta"),
-    ]),
-    ("30", "Tablets", "Tablets, tablets para niños y tabletas gráficas", [
-        ("01", "Tablets"),
-        ("02", "Tablets para niños"),
-        ("03", "Tabletas gráficas"),
-    ]),
-    ("40", "Televisores", "Smart TVs por tecnología de panel", [
-        ("01", "LED HD / Full HD"),
-        ("02", "LED 4K UHD"),
-        ("03", "QLED / NanoCell / QNED"),
-        ("04", "Mini LED / OLED"),
-    ]),
-    ("50", "Audio", "Audífonos, parlantes y barras de sonido", [
-        ("01", "Audífonos on ear"),
-        ("02", "Audífonos true wireless"),
-        ("03", "Parlantes portátiles"),
-        ("04", "Barras de sonido"),
-    ]),
-    ("60", "Smartwatch y Wearables", "Relojes inteligentes y bandas", [
-        ("01", "Smartwatch"),
-        ("02", "Smartband"),
-    ]),
-    ("70", "Gamer", "Consolas, consolas portátiles y accesorios gamer", [
-        ("01", "Consolas"),
-        ("02", "Consolas portátiles"),
-        ("03", "Mandos y accesorios"),
-        ("04", "Sillas gamer"),
-    ]),
-    ("80", "Accesorios de Cómputo", "Periféricos y monitores", [
-        ("01", "Mouse"),
-        ("02", "Teclados"),
-        ("03", "Monitores"),
-        ("04", "Headsets"),
-        ("05", "Cargadores y baterías externas"),
-    ]),
-    ("90", "Hogar y Smart Home", "Parlantes inteligentes, seguridad y climatización", [
-        ("01", "Smart Home"),
-        ("02", "Cámaras de seguridad"),
-        ("03", "Climatización"),
-    ]),
+    (
+        "15",
+        "Impresoras y Conectividad",
+        "Impresoras, antenas satelitales y redes Wi-Fi",
+        [
+            ("01", "Impresoras de tinta continua"),
+            ("02", "Impresoras láser"),
+            ("03", "Internet satelital y Wi-Fi"),
+        ],
+    ),
+    (
+        "20",
+        "Celulares",
+        "Smartphones de todas las gamas",
+        [
+            ("01", "Gama de entrada"),
+            ("02", "Gama media"),
+            ("03", "Gama alta"),
+        ],
+    ),
+    (
+        "30",
+        "Tablets",
+        "Tablets, tablets para niños y tabletas gráficas",
+        [
+            ("01", "Tablets"),
+            ("02", "Tablets para niños"),
+            ("03", "Tabletas gráficas"),
+        ],
+    ),
+    (
+        "40",
+        "Televisores",
+        "Smart TVs por tecnología de panel",
+        [
+            ("01", "LED HD / Full HD"),
+            ("02", "LED 4K UHD"),
+            ("03", "QLED / NanoCell / QNED"),
+            ("04", "Mini LED / OLED"),
+        ],
+    ),
+    (
+        "50",
+        "Audio",
+        "Audífonos, parlantes y barras de sonido",
+        [
+            ("01", "Audífonos on ear"),
+            ("02", "Audífonos true wireless"),
+            ("03", "Parlantes portátiles"),
+            ("04", "Barras de sonido"),
+        ],
+    ),
+    (
+        "60",
+        "Smartwatch y Wearables",
+        "Relojes inteligentes y bandas",
+        [
+            ("01", "Smartwatch"),
+            ("02", "Smartband"),
+        ],
+    ),
+    (
+        "70",
+        "Gamer",
+        "Consolas, consolas portátiles y accesorios gamer",
+        [
+            ("01", "Consolas"),
+            ("02", "Consolas portátiles"),
+            ("03", "Mandos y accesorios"),
+            ("04", "Sillas gamer"),
+        ],
+    ),
+    (
+        "80",
+        "Accesorios de Cómputo",
+        "Periféricos y monitores",
+        [
+            ("01", "Mouse"),
+            ("02", "Teclados"),
+            ("03", "Monitores"),
+            ("04", "Headsets"),
+            ("05", "Cargadores y baterías externas"),
+        ],
+    ),
+    (
+        "90",
+        "Hogar y Smart Home",
+        "Parlantes inteligentes, seguridad y climatización",
+        [
+            ("01", "Smart Home"),
+            ("02", "Cámaras de seguridad"),
+            ("03", "Climatización"),
+        ],
+    ),
 ]
 
 MARCAS = [
@@ -161,7 +212,5 @@ def siguiente_sku(familia, subfamilia, marca, skus_existentes) -> str:
             maximo = max(maximo, int(sku[6:8]))
     siguiente = maximo + 1
     if siguiente > 99:
-        raise ValueError(
-            f"Se alcanzó el máximo de 99 productos para el prefijo {prefijo}."
-        )
+        raise ValueError(f"Se alcanzó el máximo de 99 productos para el prefijo {prefijo}.")
     return f"{prefijo}{siguiente:02d}"

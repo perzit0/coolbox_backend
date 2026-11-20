@@ -10,6 +10,7 @@ Ejemplo:
     "Juan Daniel Pérez Lozano" -> "jperezl@coolbox.com.pe"
     Duplicado -> "jperezl1@coolbox.com.pe"
 """
+
 import unicodedata
 import re
 
@@ -47,8 +48,7 @@ def local_part(nombres: str, apellido_paterno: str, apellido_materno: str) -> st
     return base
 
 
-def build_email(nombres: str, apellido_paterno: str, apellido_materno: str,
-                dominio: str, existe_email) -> str:
+def build_email(nombres: str, apellido_paterno: str, apellido_materno: str, dominio: str, existe_email) -> str:
     """Genera un correo único.
 
     `existe_email(email) -> bool` es un callable que consulta si ya existe

@@ -15,6 +15,7 @@ Pedidos (recojo en sede):
     POST /api/tienda/pedidos                -> compra (como invitado o con sesión)
     GET  /api/tienda/pedidos/<codigo>?email= -> seguimiento
 """
+
 import json
 import math
 import re
@@ -31,27 +32,47 @@ from sqlalchemy.orm import joinedload
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from ..errors import ApiError
-from ..extensions import db
-from ..models import (Cliente, CodigoAcceso, Familia, Marca, Pedido, PedidoDetalle, Producto, Promocion, Sede,
-                      Venta, VentaDetalle, ahora)
+from ..extensions import db, limiter
+from ..models import (
+    Cliente,
+    CodigoAcceso,
+    Familia,
+    Marca,
+    Pedido,
+    PedidoDetalle,
+    Producto,
+    Sede,
+    Venta,
+    VentaDetalle,
+    ahora,
+)
 from ..services import correo
 from ..services import promociones as promo_svc
 from ..services.inventario import mover_stock
+from ..services.pagos import MARCAS_TARJETA
 
 bp = Blueprint("tienda", __name__)
-IGV = Decimal("0.18")
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
-DOMINIOS_TIPICOS = {"gmial.com": "gmail.com", "gmai.com": "gmail.com", "gmail.co": "gmail.com", "gamil.com": "gmail.com",
-                    "hotmial.com": "hotmail.com", "hotmail.co": "hotmail.com", "outlok.com": "outlook.com",
-                    "outlook.co": "outlook.com", "yahoo.co": "yahoo.com", "yaho.com": "yahoo.com"}
+DOMINIOS_TIPICOS = {
+    "gmial.com": "gmail.com",
+    "gmai.com": "gmail.com",
+    "gmail.co": "gmail.com",
+    "gamil.com": "gmail.com",
+    "hotmial.com": "hotmail.com",
+    "hotmail.co": "hotmail.com",
+    "outlok.com": "outlook.com",
+    "outlook.co": "outlook.com",
+    "yahoo.co": "yahoo.com",
+    "yaho.com": "yahoo.com",
+}
 
 # Venta cruzada: qué familias complementan a cada familia (código de familia)
 COMPLEMENTOS = {
-    "10": ["80", "50", "15"],   # laptops -> mouse/teclado/monitor, audífonos, impresoras
+    "10": ["80", "50", "15"],  # laptops -> mouse/teclado/monitor, audífonos, impresoras
     "15": ["10", "80"],
-    "20": ["80", "50", "60"],   # celulares -> cargadores, audífonos, smartwatch
+    "20": ["80", "50", "60"],  # celulares -> cargadores, audífonos, smartwatch
     "30": ["50", "80"],
-    "40": ["50", "90", "70"],   # TV -> audio, smart home, consolas
+    "40": ["50", "90", "70"],  # TV -> audio, smart home, consolas
     "50": ["20", "60"],
     "60": ["20", "50"],
     "70": ["50", "40", "80"],
@@ -62,22 +83,31 @@ COMPLEMENTOS = {
 
 # ------------------------------------------------------------------ helpers
 
+
 def _publico(p, promos):
     d = {
-        "id": p.id, "sku": p.sku, "codigo": p.codigo, "nombre": p.nombre,
-        "marca": p.marca.nombre if p.marca else None, "marca_id": p.marca_id,
-        "familia": p.familia.nombre if p.familia else None, "familia_id": p.categoria_id,
+        "id": p.id,
+        "sku": p.sku,
+        "codigo": p.codigo,
+        "nombre": p.nombre,
+        "marca": p.marca.nombre if p.marca else None,
+        "marca_id": p.marca_id,
+        "familia": p.familia.nombre if p.familia else None,
+        "familia_id": p.categoria_id,
         "familia_codigo": p.familia.codigo if p.familia else None,
         "subfamilia": p.subfamilia.nombre if p.subfamilia else None,
-        "imagen_url": p.imagen_url, "stock": p.stock, "disponible": p.stock > 0,
+        "imagen_url": p.imagen_url,
+        "stock": p.stock,
+        "disponible": p.stock > 0,
     }
     d.update(promo_svc.info_precio(p, promos))
     return d
 
 
 def _activos():
-    return (Producto.query.options(joinedload(Producto.marca), joinedload(Producto.familia), joinedload(Producto.subfamilia))
-            .filter(Producto.activo.is_(True), Producto.sku.isnot(None)))
+    return Producto.query.options(
+        joinedload(Producto.marca), joinedload(Producto.familia), joinedload(Producto.subfamilia)
+    ).filter(Producto.activo.is_(True), Producto.sku.isnot(None))
 
 
 def _venta_cruzada(base_productos, promos, excluir_ids, limite=8):
@@ -93,15 +123,24 @@ def _venta_cruzada(base_productos, promos, excluir_ids, limite=8):
         codigos += COMPLEMENTOS.get(f, [])
     if not codigos:
         return []
-    candidatos = (_activos().join(Familia, Producto.categoria_id == Familia.id)
-                  .filter(Familia.codigo.in_(codigos), Producto.stock > 0, ~Producto.id.in_(excluir_ids or [0]),
-                          Producto.precio <= tope)
-                  .all())
+    candidatos = (
+        _activos()
+        .join(Familia, Producto.categoria_id == Familia.id)
+        .filter(
+            Familia.codigo.in_(codigos),
+            Producto.stock > 0,
+            ~Producto.id.in_(excluir_ids or [0]),
+            Producto.precio <= tope,
+        )
+        .all()
+    )
     excluir_sub = {p.subfamilia_id for p in base_productos}
     candidatos = [c for c in candidatos if c.subfamilia_id not in excluir_sub]
+
     def orden(p):
         info = promo_svc.info_precio(p, promos)
         return (info["promocion"] is None, codigos.index(p.familia.codigo), float(p.precio))
+
     candidatos.sort(key=orden)
     # Variedad: no más de 3 por familia
     elegidos, por_fam = [], {}
@@ -116,11 +155,19 @@ def _venta_cruzada(base_productos, promos, excluir_ids, limite=8):
 
 
 def _promo_publica(p):
-    return {"id": p.id, "nombre": p.nombre, "descripcion": p.descripcion, "tipo": p.tipo,
-            "etiqueta": promo_svc.etiqueta(p), "patrocinador": p.patrocinador,
-            "fecha_inicio": promo_svc._aware(p.fecha_inicio).isoformat(),
-            "fecha_fin": promo_svc._aware(p.fecha_fin).isoformat(),
-            "alcance": p.alcance, "marca_id": p.marca_id, "familia_id": p.familia_id}
+    return {
+        "id": p.id,
+        "nombre": p.nombre,
+        "descripcion": p.descripcion,
+        "tipo": p.tipo,
+        "etiqueta": promo_svc.etiqueta(p),
+        "patrocinador": p.patrocinador,
+        "fecha_inicio": promo_svc._aware(p.fecha_inicio).isoformat(),
+        "fecha_fin": promo_svc._aware(p.fecha_fin).isoformat(),
+        "alcance": p.alcance,
+        "marca_id": p.marca_id,
+        "familia_id": p.familia_id,
+    }
 
 
 def _cliente_actual(opcional=False):
@@ -147,8 +194,11 @@ def _cliente_actual(opcional=False):
 def _token(cliente):
     cliente.ultimo_acceso = ahora()
     db.session.commit()
-    t = create_access_token(identity=f"cliente:{cliente.id}", additional_claims={"tipo": "cliente"},
-                            expires_delta=timedelta(days=current_app.config.get("CLIENTE_TOKEN_DIAS", 30)))
+    t = create_access_token(
+        identity=f"cliente:{cliente.id}",
+        additional_claims={"tipo": "cliente"},
+        expires_delta=timedelta(days=current_app.config.get("CLIENTE_TOKEN_DIAS", 30)),
+    )
     return jsonify(access_token=t, cliente=cliente.to_dict())
 
 
@@ -164,9 +214,16 @@ def _email(valor):
 
 def _password(raw):
     raw = raw or ""
-    if len(raw) < 8 or not re.search(r"[A-Za-z]", raw) or not re.search(r"\d", raw):
-        raise ApiError("password_debil", "La contraseña debe tener al menos 8 caracteres, con letras y números.", 400)
+    minimo = current_app.config.get("PASSWORD_LONGITUD_MINIMA", 8)
+    if len(raw) < minimo or len(raw) > 128 or not re.search(r"[A-Za-z]", raw) or not re.search(r"\d", raw):
+        raise ApiError(
+            "password_debil", f"La contraseña debe tener al menos {minimo} caracteres, con letras y números.", 400
+        )
     return raw
+
+
+def _limite():
+    return current_app.config["LIMITE_LOGIN"]
 
 
 def _validar_perfil(data):
@@ -187,8 +244,13 @@ def _validar_perfil(data):
     celular = re.sub(r"\D", "", data.get("celular") or "")
     if not re.fullmatch(r"9\d{8}", celular):
         raise ApiError("celular_invalido", "El celular debe tener 9 dígitos y empezar con 9.", 400)
-    return {"nombres": nombres[:120], "apellidos": apellidos[:160], "tipo_documento": tipo,
-            "nro_documento": nro, "celular": celular}
+    return {
+        "nombres": nombres[:120],
+        "apellidos": apellidos[:160],
+        "tipo_documento": tipo,
+        "nro_documento": nro,
+        "celular": celular,
+    }
 
 
 def _distancia_km(lat1, lng1, lat2, lng2):
@@ -223,38 +285,74 @@ def _cotizacion_publica(cot):
     for it in cot["items"]:
         p = it["producto"]
         info = _publico(p, cot["promos"])
-        info.update({
-            "cantidad": it["cantidad"], "bruto": float(it["bruto"]), "descuento": float(it["descuento"]),
-            "neto": float(it["neto"]), "sin_stock": p.stock < it["cantidad"],
-            "promocion_aplicada": {"nombre": it["promocion"].nombre, "etiqueta": promo_svc.etiqueta(it["promocion"])}
-            if it["promocion"] else None,
-        })
+        info.update(
+            {
+                "cantidad": it["cantidad"],
+                "bruto": float(it["bruto"]),
+                "descuento": float(it["descuento"]),
+                "neto": float(it["neto"]),
+                "sin_stock": p.stock < it["cantidad"],
+                "promocion_aplicada": (
+                    {"nombre": it["promocion"].nombre, "etiqueta": promo_svc.etiqueta(it["promocion"])}
+                    if it["promocion"]
+                    else None
+                ),
+            }
+        )
         items.append(info)
-    return {"items": items, "subtotal": float(cot["subtotal"]), "descuento": float(cot["descuento"]),
-            "descuento_cupon": float(cot["descuento_cupon"]), "total": float(cot["total"]), "cupon": cot["cupon"],
-            "cantidad": sum(i["cantidad"] for i in items)}
+    return {
+        "items": items,
+        "subtotal": float(cot["subtotal"]),
+        "descuento": float(cot["descuento"]),
+        "descuento_cupon": float(cot["descuento_cupon"]),
+        "total": float(cot["total"]),
+        "cupon": cot["cupon"],
+        "cantidad": sum(i["cantidad"] for i in items),
+    }
 
 
 # ------------------------------------------------------------------ catálogo
 
+
 @bp.get("/tienda/config")
 def config():
-    return jsonify(google_client_id=current_app.config.get("GOOGLE_CLIENT_ID") or None,
-                   codigo_por_correo=correo.disponible(),
-                   pagoefectivo_horas=current_app.config.get("PAGOEFECTIVO_HORAS", 24))
+    return jsonify(
+        google_client_id=current_app.config.get("GOOGLE_CLIENT_ID") or None,
+        codigo_por_correo=correo.disponible(),
+        pagoefectivo_horas=current_app.config.get("PAGOEFECTIVO_HORAS", 24),
+    )
 
 
 @bp.get("/tienda/catalogo")
 def catalogo():
-    conteo_f = dict(db.session.query(Producto.categoria_id, func.count(Producto.id))
-                    .filter(Producto.activo.is_(True)).group_by(Producto.categoria_id).all())
-    conteo_m = dict(db.session.query(Producto.marca_id, func.count(Producto.id))
-                    .filter(Producto.activo.is_(True)).group_by(Producto.marca_id).all())
-    familias = [{"id": f.id, "codigo": f.codigo, "nombre": f.nombre, "productos": conteo_f.get(f.id, 0),
-                 "subfamilias": [{"id": s.id, "nombre": s.nombre} for s in f.subfamilias]}
-                for f in Familia.query.order_by(Familia.codigo).all() if conteo_f.get(f.id)]
-    marcas = [{"id": m.id, "nombre": m.nombre, "productos": conteo_m.get(m.id, 0)}
-              for m in Marca.query.order_by(Marca.nombre).all() if conteo_m.get(m.id)]
+    conteo_f = dict(
+        db.session.query(Producto.categoria_id, func.count(Producto.id))
+        .filter(Producto.activo.is_(True))
+        .group_by(Producto.categoria_id)
+        .all()
+    )
+    conteo_m = dict(
+        db.session.query(Producto.marca_id, func.count(Producto.id))
+        .filter(Producto.activo.is_(True))
+        .group_by(Producto.marca_id)
+        .all()
+    )
+    familias = [
+        {
+            "id": f.id,
+            "codigo": f.codigo,
+            "nombre": f.nombre,
+            "productos": conteo_f.get(f.id, 0),
+            "subfamilias": [{"id": s.id, "nombre": s.nombre} for s in f.subfamilias],
+        }
+        for f in Familia.query.order_by(Familia.codigo).all()
+        if conteo_f.get(f.id)
+    ]
+    marcas = [
+        {"id": m.id, "nombre": m.nombre, "productos": conteo_m.get(m.id, 0)}
+        for m in Marca.query.order_by(Marca.nombre).all()
+        if conteo_m.get(m.id)
+    ]
     return jsonify(familias=familias, marcas=marcas)
 
 
@@ -274,12 +372,20 @@ def inicio():
             b["productos"] = incluidos[:3]
             banners.append(b)
 
-    ofertas = sorted([x for x in publicos.values() if x["descuento_pct"] > 0 and x["disponible"]],
-                     key=lambda x: -x["descuento_pct"])[:12]
+    ofertas = sorted(
+        [x for x in publicos.values() if x["descuento_pct"] > 0 and x["disponible"]], key=lambda x: -x["descuento_pct"]
+    )[:12]
     ultimos = [publicos[p.id] for p in sorted(productos, key=lambda p: -p.id) if p.stock > 0][:12]
-    vendidos_ids = [pid for (pid, _) in db.session.query(VentaDetalle.producto_id, func.sum(VentaDetalle.cantidad))
-                    .join(Venta).filter(Venta.estado == "completada").group_by(VentaDetalle.producto_id)
-                    .order_by(func.sum(VentaDetalle.cantidad).desc()).limit(12).all()]
+    vendidos_ids = [
+        pid
+        for (pid, _) in db.session.query(VentaDetalle.producto_id, func.sum(VentaDetalle.cantidad))
+        .join(Venta)
+        .filter(Venta.estado == "completada")
+        .group_by(VentaDetalle.producto_id)
+        .order_by(func.sum(VentaDetalle.cantidad).desc())
+        .limit(12)
+        .all()
+    ]
     vendidos = [publicos[i] for i in vendidos_ids if i in publicos]
     if len(vendidos) < 8:  # sin ventas suficientes: los de mayor rotación esperada (más stock)
         extra = [publicos[p.id] for p in sorted(productos, key=lambda p: -p.stock) if p.id not in vendidos_ids]
@@ -296,8 +402,14 @@ def buscar():
     if texto:
         for palabra in texto.split()[:5]:
             like = f"%{palabra}%"
-            q = q.filter(db.or_(Producto.nombre.ilike(like), Producto.sku.ilike(like), Producto.codigo.ilike(like),
-                                Producto.marca.has(Marca.nombre.ilike(like))))
+            q = q.filter(
+                db.or_(
+                    Producto.nombre.ilike(like),
+                    Producto.sku.ilike(like),
+                    Producto.codigo.ilike(like),
+                    Producto.marca.has(Marca.nombre.ilike(like)),
+                )
+            )
     if request.args.get("familia", type=int):
         q = q.filter(Producto.categoria_id == request.args.get("familia", type=int))
     if request.args.get("marca", type=int):
@@ -310,15 +422,21 @@ def buscar():
         items = [i for i in items if i["promocion"]]
     orden = request.args.get("orden") or "relevancia"
     claves = {
-        "precio_asc": lambda i: i["precio"], "precio_desc": lambda i: -i["precio"],
-        "descuento": lambda i: -i["descuento_pct"], "nuevos": lambda i: -i["id"],
+        "precio_asc": lambda i: i["precio"],
+        "precio_desc": lambda i: -i["precio"],
+        "descuento": lambda i: -i["descuento_pct"],
+        "nuevos": lambda i: -i["id"],
         "relevancia": lambda i: (not i["disponible"], i["promocion"] is None, -i["descuento_pct"]),
     }
     items.sort(key=claves.get(orden, claves["relevancia"]))
     page = max(1, request.args.get("page", 1, type=int))
     per = min(48, max(1, request.args.get("per_page", 24, type=int)))
-    return jsonify(productos=items[(page - 1) * per: page * per], total=len(items), page=page,
-                   pages=max(1, math.ceil(len(items) / per)))
+    return jsonify(
+        productos=items[(page - 1) * per : page * per],
+        total=len(items),
+        page=page,
+        pages=max(1, math.ceil(len(items) / per)),
+    )
 
 
 @bp.get("/tienda/productos/<sku>")
@@ -327,19 +445,35 @@ def detalle(sku):
     p = _activos().filter(db.or_(Producto.sku == sku, Producto.codigo == sku)).first()
     if not p:
         raise ApiError("producto_no_encontrado", "El producto no existe o ya no está a la venta.", 404)
-    misma_marca = (_activos().filter(Producto.marca_id == p.marca_id, Producto.id != p.id, Producto.stock > 0)
-                   .order_by(Producto.categoria_id != p.categoria_id).limit(10).all())
-    misma_familia = (_activos().filter(Producto.categoria_id == p.categoria_id, Producto.id != p.id,
-                                       Producto.marca_id != p.marca_id, Producto.stock > 0).limit(10).all())
+    misma_marca = (
+        _activos()
+        .filter(Producto.marca_id == p.marca_id, Producto.id != p.id, Producto.stock > 0)
+        .order_by(Producto.categoria_id != p.categoria_id)
+        .limit(10)
+        .all()
+    )
+    misma_familia = (
+        _activos()
+        .filter(
+            Producto.categoria_id == p.categoria_id,
+            Producto.id != p.id,
+            Producto.marca_id != p.marca_id,
+            Producto.stock > 0,
+        )
+        .limit(10)
+        .all()
+    )
     complementos = _venta_cruzada([p], promos, [p.id], limite=3)
     d = _publico(p, promos)
     d["descripcion"] = p.descripcion
     # Todas las promociones que aplican (por ejemplo 2x1 además de un precio especial)
     d["promociones"] = [dict(_promo_publica(pr)) for pr in promos if promo_svc.aplica_a(pr, p)]
-    return jsonify(producto=d,
-                   llevalos_juntos=complementos,
-                   misma_marca=[_publico(x, promos) for x in misma_marca],
-                   misma_familia=[_publico(x, promos) for x in misma_familia])
+    return jsonify(
+        producto=d,
+        llevalos_juntos=complementos,
+        misma_marca=[_publico(x, promos) for x in misma_marca],
+        misma_familia=[_publico(x, promos) for x in misma_familia],
+    )
 
 
 @bp.post("/tienda/carrito")
@@ -347,7 +481,9 @@ def carrito():
     data = request.get_json(silent=True) or {}
     items = data.get("items") or []
     if not items:
-        return jsonify(items=[], subtotal=0, descuento=0, descuento_cupon=0, total=0, cupon=None, cantidad=0, sugerencias=[])
+        return jsonify(
+            items=[], subtotal=0, descuento=0, descuento_cupon=0, total=0, cupon=None, cantidad=0, sugerencias=[]
+        )
     lineas = _lineas(items)
     cupon_error = None
     try:
@@ -375,7 +511,9 @@ def sedes():
 
 # ------------------------------------------------------------------ clientes
 
+
 @bp.post("/clientes/registro")
+@limiter.limit(_limite)
 def registro():
     data = request.get_json(silent=True) or {}
     email = _email(data.get("email"))
@@ -383,6 +521,12 @@ def registro():
     cliente = Cliente.query.filter_by(email=email).first()
     if cliente and (cliente.password_hash or cliente.google_sub):
         raise ApiError("email_registrado", "Ya existe una cuenta con ese correo. Inicia sesión.", 409)
+    # Un correo con compras como invitado no se reclama solo con una contraseña nueva:
+    # quien registre la cuenta debe probar que es dueño del correo (código por correo).
+    if cliente and cliente.pedidos and not cliente.email_verificado:
+        raise ApiError(
+            "verificar_correo", "Ese correo ya tiene compras. Ingresa con el código que te enviamos por correo.", 409
+        )
     if not data.get("acepta_terminos"):
         raise ApiError("terminos_requeridos", "Debes aceptar los términos y condiciones.", 400)
     if not cliente:
@@ -400,6 +544,7 @@ def registro():
 
 
 @bp.post("/clientes/login")
+@limiter.limit(_limite)
 def login():
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
@@ -410,6 +555,7 @@ def login():
 
 
 @bp.post("/clientes/google")
+@limiter.limit(_limite)
 def login_google():
     """Valida el ID token de Google Identity Services y entra (o crea la cuenta)."""
     client_id = current_app.config.get("GOOGLE_CLIENT_ID")
@@ -417,7 +563,7 @@ def login_google():
         raise ApiError("google_no_configurado", "El ingreso con Google no está habilitado.", 503)
     credencial = (request.get_json(silent=True) or {}).get("credential") or ""
     try:
-        url = "https://oauth2.googleapis.com/tokeninfo?" + urllib.parse.urlencode({"id_token": credencial})
+        url = current_app.config["GOOGLE_TOKENINFO_URL"] + "?" + urllib.parse.urlencode({"id_token": credencial})
         with urllib.request.urlopen(url, timeout=10) as r:
             info = json.loads(r.read().decode())
     except Exception:
@@ -438,20 +584,31 @@ def login_google():
 
 
 @bp.post("/clientes/codigo")
+@limiter.limit(_limite)
 def enviar_codigo():
     if not correo.disponible():
         raise ApiError("correo_no_configurado", "El ingreso con código por correo no está habilitado.", 503)
     email = _email((request.get_json(silent=True) or {}).get("email"))
-    recientes = CodigoAcceso.query.filter(CodigoAcceso.email == email,
-                                          CodigoAcceso.creado_en > ahora() - timedelta(minutes=10)).count()
-    if recientes >= 3:
+    cfg = current_app.config
+    minutos = cfg.get("CODIGO_MINUTOS", 10)
+    recientes = CodigoAcceso.query.filter(
+        CodigoAcceso.email == email, CodigoAcceso.creado_en > ahora() - timedelta(minutes=minutos)
+    ).count()
+    if recientes >= cfg.get("CODIGO_MAX_ENVIOS", 3):
         raise ApiError("demasiados_codigos", "Ya enviamos varios códigos. Espera unos minutos.", 429)
     codigo = f"{secrets.randbelow(1000000):06d}"
-    db.session.add(CodigoAcceso(email=email, codigo_hash=generate_password_hash(codigo),
-                                expira_en=ahora() + timedelta(minutes=10)))
+    db.session.add(
+        CodigoAcceso(
+            email=email, codigo_hash=generate_password_hash(codigo), expira_en=ahora() + timedelta(minutes=minutos)
+        )
+    )
     db.session.commit()
     try:
-        correo.enviar(email, "Tu código de acceso", f"Tu código para ingresar a la tienda es {codigo}. Vence en 10 minutos.")
+        correo.enviar(
+            email,
+            "Tu código de acceso",
+            f"Tu código para ingresar a la tienda es {codigo}. Vence en {minutos} minutos.",
+        )
     except Exception as exc:
         current_app.logger.warning("No se pudo enviar el código: %s", exc)
         raise ApiError("correo_fallo", "No pudimos enviar el correo. Intenta de nuevo.", 502)
@@ -459,14 +616,19 @@ def enviar_codigo():
 
 
 @bp.post("/clientes/codigo/verificar")
+@limiter.limit(_limite)
 def verificar_codigo():
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     codigo = (data.get("codigo") or "").strip()
-    c = (CodigoAcceso.query.filter(CodigoAcceso.email == email, CodigoAcceso.usado.is_(False),
-                                   CodigoAcceso.expira_en > ahora())
-         .order_by(CodigoAcceso.id.desc()).first())
-    if not c or c.intentos >= 5:
+    c = (
+        CodigoAcceso.query.filter(
+            CodigoAcceso.email == email, CodigoAcceso.usado.is_(False), CodigoAcceso.expira_en > ahora()
+        )
+        .order_by(CodigoAcceso.id.desc())
+        .first()
+    )
+    if not c or c.intentos >= current_app.config.get("CODIGO_MAX_INTENTOS", 5):
         raise ApiError("codigo_invalido", "El código venció. Pide uno nuevo.", 401)
     if not check_password_hash(c.codigo_hash, codigo):
         c.intentos += 1
@@ -513,8 +675,6 @@ def mis_pedidos():
 
 # ------------------------------------------------------------------ pedidos
 
-MARCAS_TARJETA = ("Visa", "Mastercard", "American Express", "Diners Club")
-
 
 @bp.post("/tienda/pedidos")
 def crear_pedido():
@@ -523,7 +683,9 @@ def crear_pedido():
     email = cliente.email if cliente else _email(data.get("email"))
     perfil = _validar_perfil(data)
     if not data.get("acepta_terminos"):
-        raise ApiError("terminos_requeridos", "Debes aceptar los términos y condiciones y la política de privacidad.", 400)
+        raise ApiError(
+            "terminos_requeridos", "Debes aceptar los términos y condiciones y la política de privacidad.", 400
+        )
     sede = db.session.get(Sede, data.get("sede_id"))
     if not sede or not sede.activa:
         raise ApiError("sede_invalida", "Elige la tienda donde recogerás tu pedido.", 400)
@@ -536,7 +698,9 @@ def crear_pedido():
         if pago.get("marca") not in MARCAS_TARJETA or not re.fullmatch(r"\d{4}", str(pago.get("ultimos4") or "")):
             raise ApiError("pago_invalido", "Los datos de la tarjeta no son válidos.", 400)
     if metodo in ("yape", "plin") and not re.fullmatch(r"\d{6,12}", str(pago.get("nro_operacion") or "")):
-        raise ApiError("pago_invalido", f"Ingresa el número de operación de {metodo.capitalize()} (6 a 12 dígitos).", 400)
+        raise ApiError(
+            "pago_invalido", f"Ingresa el número de operación de {metodo.capitalize()} (6 a 12 dígitos).", 400
+        )
 
     # Cliente: con sesión se usa su cuenta; como invitado se busca o crea por correo.
     if not cliente:
@@ -561,12 +725,23 @@ def crear_pedido():
         raise ApiError("carrito_vacio", "Tu carrito está vacío.", 400)
     cot = promo_svc.cotizar(lineas, "online", cupon=data.get("cupon") or None)
     total = cot["total"]
-    base = (total / (1 + IGV)).quantize(Decimal("0.01"))
+    base = (total / (1 + Decimal(str(current_app.config.get("IGV_RATE", 0.18))))).quantize(Decimal("0.01"))
 
-    pedido = Pedido(codigo=f"TMP-{secrets.token_hex(6)}", cliente_id=cliente.id, sede_id=sede.id, email=email,
-                    subtotal=cot["subtotal"], descuento=cot["descuento"], descuento_cupon=cot["descuento_cupon"],
-                    cupon=cot["cupon"]["codigo"] if cot["cupon"] else None, total=total, base=base, igv=total - base,
-                    metodo_pago=metodo, **perfil)
+    pedido = Pedido(
+        codigo=f"TMP-{secrets.token_hex(6)}",
+        cliente_id=cliente.id,
+        sede_id=sede.id,
+        email=email,
+        subtotal=cot["subtotal"],
+        descuento=cot["descuento"],
+        descuento_cupon=cot["descuento_cupon"],
+        cupon=cot["cupon"]["codigo"] if cot["cupon"] else None,
+        total=total,
+        base=base,
+        igv=total - base,
+        metodo_pago=metodo,
+        **perfil,
+    )
     if metodo == "tarjeta":
         pedido.marca_tarjeta, pedido.ultimos4 = pago["marca"], str(pago["ultimos4"])
         pedido.nro_operacion = f"{secrets.randbelow(10**8):08d}"
@@ -584,18 +759,29 @@ def crear_pedido():
     pedido.codigo = f"P-{pedido.id:06d}"
     for it in cot["items"]:
         p = it["producto"]
-        db.session.add(PedidoDetalle(pedido_id=pedido.id, producto_id=p.id, cantidad=it["cantidad"],
-                                     precio_unitario=p.precio, descuento=it["descuento"], subtotal=it["neto"],
-                                     promocion_id=it["promocion"].id if it["promocion"] else None,
-                                     promocion_nombre=it["promocion"].nombre if it["promocion"] else None))
+        db.session.add(
+            PedidoDetalle(
+                pedido_id=pedido.id,
+                producto_id=p.id,
+                cantidad=it["cantidad"],
+                precio_unitario=p.precio,
+                descuento=it["descuento"],
+                subtotal=it["neto"],
+                promocion_id=it["promocion"].id if it["promocion"] else None,
+                promocion_nombre=it["promocion"].nombre if it["promocion"] else None,
+            )
+        )
         # Se separa el stock para la sede desde que se hace el pedido
         mover_stock(p, -it["cantidad"], "pedido_web", None, f"Pedido online {pedido.codigo} (recojo en {sede.nombre})")
     db.session.commit()
     if correo.disponible():
         try:
-            correo.enviar(email, f"Tu pedido {pedido.codigo}",
-                          f"Hola {pedido.nombres}, recibimos tu pedido {pedido.codigo} por S/ {pedido.total}. "
-                          f"Lo recoges en {sede.nombre} ({sede.direccion}) presentando tu {pedido.tipo_documento}.")
+            correo.enviar(
+                email,
+                f"Tu pedido {pedido.codigo}",
+                f"Hola {pedido.nombres}, recibimos tu pedido {pedido.codigo} por S/ {pedido.total}. "
+                f"Lo recoges en {sede.nombre} ({sede.direccion}) presentando tu {pedido.tipo_documento}.",
+            )
         except Exception as exc:
             current_app.logger.warning("No se pudo enviar la confirmación: %s", exc)
     return jsonify(pedido=pedido.to_dict()), 201

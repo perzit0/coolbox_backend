@@ -12,33 +12,51 @@ despliega en Render y sirve al frontend en Vercel.
 4. Inicia la API: `flask --app wsgi:app run --debug`.
 
 Al arrancar por primera vez el backend crea las tablas y carga el catálogo
-maestro (permisos, roles, familias/subfamilias/marcas, 39 productos reales de
-coolbox.pe con su imagen oficial y SKU, y usuarios demo). Si la BD ya tenía
-la versión anterior, los 20 productos antiguos (LAP001, CEL001...) se
-convierten en su equivalente real conservando stock y ventas.
+maestro (permisos, roles, familias/subfamilias/marcas y 39 productos reales de
+coolbox.pe con su imagen oficial y SKU).
 Endpoints de salud: `GET /health` y `GET /health/db` (prueba la conexión a la BD).
 
-Usuarios demo:
+### Usuarios iniciales
 
-- Administrador — `admin@coolbox.com.pe` / `Admin123!`
-- Cajero — `jperezl@coolbox.com.pe` / `Vendedor123!`
-- Supervisor de Caja — `mtorresr@coolbox.com.pe` / `Supervisor123!` · **PIN 482615** (en una BD nueva también tiene el rol Cajero, para probar la selección de rol)
-- El Administrador demo tiene **PIN 739142**. Los PIN demo solo se asignan si el usuario aún no tiene uno; cada supervisor puede cambiarlo en Mi cuenta.
+Ninguna contraseña ni PIN está escrito en el código ni en este repositorio.
+
+- Si la BD no tiene administradores, se crea uno con `ADMIN_INICIAL_EMAIL` y
+  `ADMIN_INICIAL_PASSWORD`; en su primer ingreso debe cambiar la contraseña.
+- Con `SEED_USUARIOS_DEMO=1` se crean además un cajero (`jperezl@...`) y una
+  supervisora con dos roles (`mtorresr@...`), con la clave `DEMO_PASSWORD` y el
+  PIN `DEMO_PIN`. Cada usuario cambia su clave y su PIN en *Mi cuenta*.
 
 ## Variables de entorno
 
-| Variable          | Uso                                                                          |
-| ----------------- | ---------------------------------------------------------------------------- |
-| `DATABASE_URL`    | Cadena de conexión Postgres. En Supabase usa el **Session Pooler**.          |
-| `SECRET_KEY`      | Clave interna de Flask.                                                      |
-| `JWT_SECRET_KEY`  | Firma independiente de tokens JWT.                                           |
-| `FRONTEND_ORIGIN` | URL exacta del frontend Vercel. Acepta varias separadas por coma.            |
-| `EMAIL_DOMAIN`    | Dominio institucional (por defecto `coolbox.com.pe`).                         |
-| `IGV_RATE`        | Tasa del IGV para descomposición del total (por defecto `0.18`).             |
-| `CUADRE_CIEGO`    | `1` (defecto): el cajero no ve el efectivo esperado hasta cerrar. `0` lo muestra. |
-| `LIMITE_EFECTIVO_CAJA` | Efectivo en gaveta que dispara el aviso de retiro parcial (defecto `1500`). |
-| `DESCUENTO_MAX_CAJERO` | % de descuento que el cajero aplica sin PIN (defecto `5`).              |
-| `DESCUENTO_MAX_TOTAL`  | % máximo de descuento aun con PIN (defecto `30`).                        |
+Todas las reglas de negocio, límites de seguridad, credenciales y URLs externas
+se leen del entorno (`config.py`). La lista completa, con sus valores por
+defecto, está en `.env.example`. Las principales:
+
+| Variable | Uso |
+| --- | --- |
+| `DATABASE_URL` | Cadena de conexión Postgres. En Supabase usa el **Session Pooler**. |
+| `SECRET_KEY`, `JWT_SECRET_KEY` | Claves aleatorias de al menos 32 caracteres. Sin ellas se genera una temporal (las sesiones se cierran al reiniciar). |
+| `FRONTEND_ORIGIN` | URLs exactas del frontend y la tienda en Vercel, separadas por coma. |
+| `LIMITE_LOGIN`, `LOGIN_MAX_INTENTOS`, `PIN_MAX_INTENTOS`... | Límites contra fuerza bruta (por IP y por cuenta). |
+| `IGV_RATE`, `ZONA_HORARIA_HORAS` | Tasa del IGV y zona horaria del negocio. |
+| `CUADRE_CIEGO`, `LIMITE_EFECTIVO_CAJA`, `CAJA_FONDO_MAXIMO` | Reglas de caja. |
+| `POS_PROVEEDOR` | POS de la tienda (simulado en este proyecto). |
+| `SUNAT_*`, `COMPROBANTES_DIR` | API de facturación y carpeta de comprobantes. |
+| `CONSULTA_TOKEN` | Token del servicio de consulta de DNI/RUC (autocompleta el cliente). |
+| `DEVOLUCION_DIAS_MAX` | Plazo de devolución. |
+
+## Seguridad
+
+- Contraseñas y PIN con hash; bloqueo por intentos fallidos por cuenta y límite de peticiones por IP
+  (`flask-limiter`) en ingreso, PIN, códigos por correo y consultas externas.
+- El ingreso no revela si un correo existe (mismo mensaje y mismo tiempo de respuesta).
+- JWT firmado con clave del entorno; el rol activo viaja en el token y se valida en cada endpoint.
+- CORS restringido a los orígenes de `FRONTEND_ORIGIN`; cabeceras de seguridad (nosniff, frame DENY,
+  CSP, HSTS en https) y límite de tamaño de petición.
+- Sin SQL escrito a mano en la lógica: todo pasa por el ORM con parámetros. Las únicas sentencias de texto
+  son las migraciones ligeras de estructura (`app/services/schema.py`), con nombres fijos del propio código.
+- Los PDF/XML solo se entregan si están dentro de `COMPROBANTES_DIR`; las imágenes solo aceptan https o
+  PNG/JPEG/WebP/GIF en base64 (no SVG).
 
 ## Reglas del negocio implementadas
 
@@ -46,13 +64,14 @@ Usuarios demo:
 - **Login único**: `POST /api/auth/login` para todo el personal. Con un solo rol, el rol queda activo al ingresar; con varios roles (el Administrador incluido) se elige en `POST /api/auth/seleccionar-rol`.
 - **Selección de rol**: al iniciar sesión, el usuario elige uno de sus roles (`POST /api/auth/seleccionar-rol`). El rol activo viaja en el JWT y controla qué endpoints puede usar.
 - **Roles predefinidos**: Administrador, **Cajero** y **Supervisor de Caja**. Un usuario puede tener varios roles asignados. Los códigos internos siguen siendo `vendedor` y `supervisor` para no romper usuarios ni ventas existentes; solo cambió el nombre visible. Almacenero se retiró (entradas, salidas y kardex quedan en el Administrador).
-- **Autorización con PIN en la caja** (`app/services/autorizacion.py`): el cajero no sale de su sesión. El supervisor elige su nombre, escribe su PIN (exactamente 6 dígitos, guardado con hash) y elige un motivo. La API entrega un token de **un solo uso, válido 90 s**, solo para esa acción (y esa venta). Tres PIN errados bloquean el PIN de ese supervisor 5 minutos. Nadie puede autorizarse a sí mismo. Todo intento queda en la bitácora `autorizacion`.
-- **Acciones que piden PIN**: retirar o restar un producto ya registrado en el carrito, cancelar la venta en curso, descuento mayor al 5 %, anular una venta cobrada (desde la caja del cajero), retiro parcial de efectivo, reimpresión de un comprobante y cierre de caja con diferencia.
+- **Autorización con PIN en la caja** (`app/services/autorizacion.py`): el cajero no sale de su sesión. El supervisor elige su nombre, escribe su PIN (exactamente 6 dígitos, guardado con hash) y elige un motivo. La API entrega un token de **un solo uso, válido `PIN_TOKEN_SEGUNDOS`**, solo para esa acción (y esa venta). `PIN_MAX_INTENTOS` PIN errados bloquean el PIN de ese supervisor `PIN_MINUTOS_BLOQUEO` minutos. Nadie puede autorizarse a sí mismo. Todo intento queda en la bitácora `autorizacion`.
+- **Acciones que piden PIN**: retirar o restar un producto ya registrado en el carrito, cancelar la venta en curso, anular una venta cobrada (desde la caja del cajero), retiro parcial de efectivo, reimpresión de un comprobante y cierre de caja con diferencia.
 - **Anulación de ventas**: el Supervisor de Caja y el Administrador anulan directamente (`ventas.anular`); el Cajero anula ventas de **su** caja abierta con el PIN de un supervisor.
-- **Devoluciones (después de la compra)**: en caja y con PIN de supervisor, sobre ventas con boleta o factura aceptada por SUNAT, dentro de `DEVOLUCION_DIAS_MAX` días. Total o por producto, en una o varias devoluciones; el importe es proporcional a lo cobrado (promociones y descuento global). Reembolso por un medio usado en la compra (efectivo de la gaveta o extorno con N° de operación). Cada producto vuelve al stock o no (falla → servicio técnico). Se emite una **nota de crédito** (motivo 06 devolución total, 07 por ítem) con serie `SUNAT_SERIE_NC_BOLETA` / `SUNAT_SERIE_NC_FACTURA`; PDF y XML se guardan en `comprobantes/notas_credito/AAAA-MM/DD/`. Una venta con devoluciones ya no se puede anular.
-- **Medios de pago reales**: efectivo (recibido y vuelto), tarjeta en POS (OpenPay, Niubiz, Izipay, Culqi; débito o crédito; N° de operación del voucher), QR del POS, Yape y Plin directos (N° de operación). **Pago mixto** de hasta 3 medios; la suma debe ser exacta. Un N° de operación no puede usarse dos veces (evita capturas de Yape reutilizadas). Nunca se guarda el número de tarjeta.
-- **Cliente**: nombre y documento (DNI, CE o RUC) obligatorios en toda venta, porque toda boleta o factura identifica al cliente.
-- **Caja**: retiro parcial (sangría) con PIN cuando la gaveta supera el límite; **cuadre ciego** (el cajero cuenta antes de ver lo esperado); conciliación de tarjeta/QR/Yape/Plin contra el cierre del POS y los reportes de las apps; si hay diferencia se exige observación y PIN. Efectivo esperado = fondo + cobros en efectivo − retiros.
+- **Devoluciones (después de la compra)**: en caja y con PIN de supervisor, sobre ventas con boleta o factura aceptada por SUNAT, dentro de `DEVOLUCION_DIAS_MAX` días. Total o por producto, en una o varias devoluciones; el importe es proporcional a lo cobrado (con promociones). Reembolso por un medio usado en la compra (efectivo de la gaveta o extorno con N° de operación). Cada producto vuelve al stock o no (falla → servicio técnico). Se emite una **nota de crédito** (motivo 06 devolución total, 07 por ítem) con serie `SUNAT_SERIE_NC_BOLETA` / `SUNAT_SERIE_NC_FACTURA`; PDF y XML se guardan en `comprobantes/notas_credito/AAAA-MM/DD/`. Una venta con devoluciones ya no se puede anular.
+- **Precios**: los fija la empresa (precio de lista y promociones vigentes). En caja no hay descuentos manuales.
+- **Medios de pago**: efectivo (recibido y vuelto), tarjeta en el POS de la tienda (`POS_PROVEEDOR`; débito o crédito; N° de operación del voucher), Yape y Plin. El POS es **simulado**: la caja muestra "inserte su tarjeta / escanee el QR" y el cajero confirma o cancela el pago; el N° de operación lo genera ese POS de prueba. **Pago mixto** de hasta 3 medios; la suma debe ser exacta. Un N° de operación no puede usarse dos veces (evita capturas de Yape reutilizadas). Nunca se guarda el número de tarjeta.
+- **Cliente**: documento (DNI, CE o RUC) obligatorio en toda venta. Con DNI o RUC el nombre se completa solo consultando RENIEC/SUNAT (`CONSULTA_TOKEN`); con CE, o si la consulta no está disponible, se escribe a mano.
+- **Caja**: retiro parcial (sangría) con PIN cuando la gaveta supera el límite; **cuadre ciego** (el cajero cuenta antes de ver lo esperado); conciliación de tarjeta/QR/Yape/Plin contra el cierre del POS y los reportes de las apps; si hay diferencia se exige observación y PIN. Efectivo esperado = fondo + cobros en efectivo − devoluciones en efectivo − retiros.
 - **Imágenes de producto**: campo `imagen_url` (URL https o foto subida como data URL, máx. ~1 MB). La columna se agrega sola en BD existentes (`app/services/schema.py`).
 - **Ventas en tienda**: al registrar una venta se descuenta stock; al anularla se devuelve stock. El código correlativo es `V-000001`.
 

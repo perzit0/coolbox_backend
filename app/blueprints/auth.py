@@ -15,15 +15,29 @@ Flujo:
     3. POST /api/auth/cambiar-password -> cambio de contraseña propio
        (obligatorio la primera vez y disponible siempre desde "Mi cuenta").
 """
+
 from datetime import timezone
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import create_access_token, get_jwt, get_jwt_identity, jwt_required
 
 from ..errors import ApiError
-from ..extensions import db
+from ..extensions import db, limiter
 from ..models import Rol, Usuario, ahora
-from ..services.seguridad import MAX_INTENTOS, MINUTOS_BLOQUEO, duracion_bloqueo, validar_password
+from ..services.seguridad import duracion_bloqueo, max_intentos, minutos_bloqueo, validar_password
+
+# Hash de relleno: un correo inexistente tarda lo mismo que uno real (no revela qué correos existen).
+_HASH_RELLENO = None
+
+
+def _verificar_relleno(password):
+    global _HASH_RELLENO
+    from werkzeug.security import check_password_hash, generate_password_hash
+
+    if _HASH_RELLENO is None:
+        _HASH_RELLENO = generate_password_hash("relleno-sin-uso")
+    check_password_hash(_HASH_RELLENO, password)
+
 
 bp = Blueprint("auth", __name__)
 
@@ -44,6 +58,7 @@ def _aware(dt):
 
 
 @bp.post("/auth/login")
+@limiter.limit(lambda: current_app.config["LIMITE_LOGIN"])
 def login():
     """Ingreso único para todo el personal (administradores incluidos)."""
     data = request.get_json(silent=True) or {}
@@ -54,6 +69,7 @@ def login():
 
     usuario = Usuario.query.filter_by(email=email).first()
     if not usuario:
+        _verificar_relleno(password)
         raise ApiError("credenciales_invalidas", "Correo o contraseña incorrectos.", 401)
 
     password_ok = usuario.check_password(password)
@@ -80,19 +96,19 @@ def login():
 
     if not password_ok:
         usuario.intentos_fallidos = (usuario.intentos_fallidos or 0) + 1
-        restantes = MAX_INTENTOS - usuario.intentos_fallidos
+        restantes = max_intentos() - usuario.intentos_fallidos
         if restantes <= 0:
             usuario.bloqueado_hasta = ahora() + duracion_bloqueo()
             usuario.intentos_fallidos = 0
             db.session.commit()
             raise ApiError(
                 "cuenta_bloqueada",
-                f"Demasiados intentos fallidos. La cuenta se bloqueó por {MINUTOS_BLOQUEO} minutos.",
+                f"Demasiados intentos fallidos. La cuenta se bloqueó por {minutos_bloqueo()} minutos.",
                 423,
             )
         db.session.commit()
-        aviso = f" Le queda{'n' if restantes > 1 else ''} {restantes} intento{'s' if restantes > 1 else ''}." if restantes <= 2 else ""
-        raise ApiError("credenciales_invalidas", f"Correo o contraseña incorrectos.{aviso}", 401)
+        # Mismo mensaje que un correo inexistente: no se confirma que la cuenta exista.
+        raise ApiError("credenciales_invalidas", "Correo o contraseña incorrectos.", 401)
 
     if not usuario.roles:
         raise ApiError("sin_roles", "Este usuario aún no tiene roles asignados. Contacte al administrador.", 403)
@@ -143,7 +159,7 @@ def seleccionar_rol():
 @bp.post("/auth/liberar-rol")
 @jwt_required()
 def liberar_rol():
-    """"Cambiar rol": emite un token SIN rol activo.
+    """ "Cambiar rol": emite un token SIN rol activo.
 
     Así el rol anterior deja de valer aunque el usuario recargue la página
     en la pantalla de selección.
@@ -208,9 +224,12 @@ def actualizar_perfil():
 def configurar_pin():
     """El supervisor define o cambia su PIN de autorización (exige su contraseña)."""
     from ..services.autorizacion import validar_pin_nuevo
+
     usuario = _usuario_actual_o_404()
     if not usuario.puede_autorizar:
-        raise ApiError("permiso_insuficiente", "Solo los supervisores y administradores tienen PIN de autorización.", 403)
+        raise ApiError(
+            "permiso_insuficiente", "Solo los supervisores y administradores tienen PIN de autorización.", 403
+        )
     data = request.get_json(silent=True) or {}
     if not usuario.check_password(data.get("password_actual") or ""):
         raise ApiError("password_incorrecta", "La contraseña actual no es correcta.", 400)
@@ -221,6 +240,7 @@ def configurar_pin():
 
 
 # ---- Utilidades para otros blueprints ----
+
 
 def _rol_activo():
     claims = get_jwt()

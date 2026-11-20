@@ -5,6 +5,7 @@ existen (como la BD de Supabase en producción). Aquí se agregan las columnas
 e índices nuevos de forma idempotente, funcionando tanto en PostgreSQL como
 en SQLite.
 """
+
 from sqlalchemy import inspect, text
 
 from ..extensions import db
@@ -115,8 +116,10 @@ def _activar_rls(dialecto):
     if dialecto != "postgresql":
         return
     with db.engine.begin() as conn:
-        tablas = conn.execute(text(
-            "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND NOT rowsecurity"
-        )).scalars().all()
+        tablas = (
+            conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND NOT rowsecurity"))
+            .scalars()
+            .all()
+        )
         for tabla in tablas:
             conn.execute(text(f'ALTER TABLE public."{tabla}" ENABLE ROW LEVEL SECURITY'))

@@ -1,12 +1,13 @@
 """Pedidos de la tienda online para el personal de la sede (recojo en tienda).
 
-    GET  /api/pedidos-online?estado=&sede=&q=&desde=&hasta=
-    GET  /api/pedidos-online/<id>
-    POST /api/pedidos-online/<id>/confirmar-pago   (PagoEfectivo pagado)
-    POST /api/pedidos-online/<id>/listo            (preparado para recojo)
-    POST /api/pedidos-online/<id>/entregar         {nro_documento}  (se valida el documento del comprador)
-    POST /api/pedidos-online/<id>/cancelar         {motivo}         (el stock vuelve al inventario)
+GET  /api/pedidos-online?estado=&sede=&q=&desde=&hasta=
+GET  /api/pedidos-online/<id>
+POST /api/pedidos-online/<id>/confirmar-pago   (PagoEfectivo pagado)
+POST /api/pedidos-online/<id>/listo            (preparado para recojo)
+POST /api/pedidos-online/<id>/entregar         {nro_documento}  (se valida el documento del comprador)
+POST /api/pedidos-online/<id>/cancelar         {motivo}         (el stock vuelve al inventario)
 """
+
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required
 
@@ -57,8 +58,15 @@ def listar():
     texto = (request.args.get("q") or "").strip()
     if texto:
         like = f"%{texto}%"
-        q = q.filter(db.or_(Pedido.codigo.ilike(like), Pedido.nro_documento.ilike(like), Pedido.email.ilike(like),
-                            Pedido.nombres.ilike(like), Pedido.apellidos.ilike(like)))
+        q = q.filter(
+            db.or_(
+                Pedido.codigo.ilike(like),
+                Pedido.nro_documento.ilike(like),
+                Pedido.email.ilike(like),
+                Pedido.nombres.ilike(like),
+                Pedido.apellidos.ilike(like),
+            )
+        )
     inicio, fin = rango_fechas(request.args.get("desde"), request.args.get("hasta"))
     if inicio:
         q = q.filter(Pedido.fecha >= inicio)
@@ -66,8 +74,11 @@ def listar():
         q = q.filter(Pedido.fecha < fin)
     pedidos = q.order_by(Pedido.id.desc()).limit(200).all()
     conteo = dict(db.session.query(Pedido.estado, db.func.count(Pedido.id)).group_by(Pedido.estado).all())
-    return jsonify(pedidos=[p.to_dict() for p in pedidos], conteo=conteo,
-                   sedes=[{"id": s.id, "nombre": s.nombre} for s in Sede.query.order_by(Sede.nombre).all()])
+    return jsonify(
+        pedidos=[p.to_dict() for p in pedidos],
+        conteo=conteo,
+        sedes=[{"id": s.id, "nombre": s.nombre} for s in Sede.query.order_by(Sede.nombre).all()],
+    )
 
 
 @bp.get("/pedidos-online/<int:pid>")
@@ -110,8 +121,11 @@ def entregar(pid):
         raise ApiError("estado_invalido", "Solo se entregan pedidos pagados.", 409)
     doc = ((request.get_json(silent=True) or {}).get("nro_documento") or "").strip().upper()
     if doc != p.nro_documento:
-        raise ApiError("documento_no_coincide",
-                       f"El documento no coincide con el del comprador ({p.tipo_documento}). Solo el titular recoge el pedido.", 400)
+        raise ApiError(
+            "documento_no_coincide",
+            f"El documento no coincide con el del comprador ({p.tipo_documento}). Solo el titular recoge el pedido.",
+            400,
+        )
     p.estado, p.fecha_entrega = "entregado", ahora()
     p.entregado_por_id = _usuario_actual().id
     db.session.commit()

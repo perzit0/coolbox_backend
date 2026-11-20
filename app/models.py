@@ -10,6 +10,7 @@ acciones que puede realizar durante la sesión.
 Catálogo: Familia -> Subfamilia, más Marca. El SKU de 8 dígitos se arma con
 esos códigos (ver app/services/catalogo.py).
 """
+
 from datetime import datetime, date, timezone
 from decimal import Decimal
 
@@ -52,6 +53,7 @@ rol_permiso = db.Table(
 
 class Permiso(db.Model):
     """Permiso atómico que un rol puede otorgar."""
+
     __tablename__ = "permiso"
     id = db.Column(db.Integer, primary_key=True)
     codigo = db.Column(db.String(60), nullable=False, unique=True)
@@ -63,6 +65,7 @@ class Permiso(db.Model):
 
 class Rol(db.Model):
     """Rol funcional dentro de Coolbox."""
+
     __tablename__ = "rol"
     id = db.Column(db.Integer, primary_key=True)
     codigo = db.Column(db.String(40), nullable=False, unique=True)
@@ -87,6 +90,7 @@ class Rol(db.Model):
 
 class Usuario(db.Model):
     """Personal de la tienda. El correo se genera automáticamente."""
+
     __tablename__ = "usuario"
     id = db.Column(db.Integer, primary_key=True)
     dni = db.Column(db.String(15), nullable=False, unique=True)
@@ -165,6 +169,7 @@ class Usuario(db.Model):
 
 class Familia(db.Model):
     """Familia de productos (primer nivel del SKU). Tabla histórica `categoria`."""
+
     __tablename__ = "categoria"
     id = db.Column(db.Integer, primary_key=True)
     codigo = db.Column(db.String(2), unique=True)  # "10", "20", ...
@@ -183,6 +188,7 @@ class Familia(db.Model):
 
 class Subfamilia(db.Model):
     """Subfamilia dentro de una familia (segundo nivel del SKU)."""
+
     __tablename__ = "subfamilia"
     __table_args__ = (UniqueConstraint("familia_id", "codigo", name="uq_subfamilia_codigo"),)
     id = db.Column(db.Integer, primary_key=True)
@@ -198,6 +204,7 @@ class Subfamilia(db.Model):
 
 class Marca(db.Model):
     """Marca comercial (tercer nivel del SKU)."""
+
     __tablename__ = "marca"
     id = db.Column(db.Integer, primary_key=True)
     codigo = db.Column(db.String(2), nullable=False, unique=True)
@@ -270,9 +277,9 @@ class Producto(db.Model):
 
 class MovimientoStock(db.Model):
     """Kardex: cada cambio de stock queda registrado con su motivo y autor."""
+
     __tablename__ = "movimiento_stock"
-    TIPOS = ("inicial", "entrada", "salida", "ajuste", "venta", "anulacion", "pedido_web", "cancel_web",
-             "devolucion")
+    TIPOS = ("inicial", "entrada", "salida", "ajuste", "venta", "anulacion", "pedido_web", "cancel_web", "devolucion")
 
     id = db.Column(db.Integer, primary_key=True)
     producto_id = db.Column(db.Integer, ForeignKey("producto.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -313,6 +320,7 @@ class Caja(db.Model):
     ventas en ella y al terminar el turno la cierra con un arqueo: cuenta el
     efectivo y el sistema calcula la diferencia contra lo esperado.
     """
+
     __tablename__ = "caja"
 
     id = db.Column(db.Integer, primary_key=True)
@@ -340,6 +348,7 @@ class Caja(db.Model):
     def to_dict(self):
         def num(v):
             return float(v) if v is not None else None
+
         return {
             "id": self.id,
             "codigo": self.codigo,
@@ -358,8 +367,7 @@ class Caja(db.Model):
 
 class Venta(db.Model):
     __tablename__ = "venta"
-    # efectivo | tarjeta (POS) | qr (QR del POS: Yape/Plin/otras billeteras) | yape | plin (directos) | mixto
-    METODOS_PAGO = ("efectivo", "tarjeta", "qr", "yape", "plin")
+    # efectivo | tarjeta (POS) | qr (QR del POS) | yape | plin (directos) | mixto -> ver services/pagos.py
 
     id = db.Column(db.Integer, primary_key=True)
     codigo = db.Column(db.String(20), nullable=False, unique=True)  # V-000001
@@ -388,12 +396,12 @@ class Venta(db.Model):
     # Caja (turno) en la que se cobró la venta
     caja_id = db.Column(db.Integer, ForeignKey("caja.id", ondelete="SET NULL"), index=True)
     # Comprobante electrónico (SUNAT): boleta o factura, con sus archivos guardados localmente
-    tipo_comprobante = db.Column(db.String(10))      # boleta | factura
-    comprobante_serie = db.Column(db.String(10))     # B001 | F001
+    tipo_comprobante = db.Column(db.String(10))  # boleta | factura
+    comprobante_serie = db.Column(db.String(10))  # B001 | F001
     comprobante_numero = db.Column(db.String(20))
-    comprobante_api_id = db.Column(db.Integer)        # id del comprobante en la API de facturación
-    comprobante_pdf = db.Column(db.String(300))      # ruta relativa del PDF guardado
-    comprobante_xml = db.Column(db.String(300))      # ruta relativa del XML guardado
+    comprobante_api_id = db.Column(db.Integer)  # id del comprobante en la API de facturación
+    comprobante_pdf = db.Column(db.String(300))  # ruta relativa del PDF guardado
+    comprobante_xml = db.Column(db.String(300))  # ruta relativa del XML guardado
     estado_sunat = db.Column(db.String(15), nullable=False, default="pendiente")  # pendiente | aceptado | error
     sunat_mensaje = db.Column(db.String(300))
     sunat_intentos = db.Column(db.Integer, nullable=False, default=0)
@@ -437,10 +445,17 @@ class Venta(db.Model):
             "cliente_nombre": self.cliente_nombre,
             "cliente_documento": self.cliente_documento,
             "metodo_pago": self.metodo_pago,
-            "pagos": [p.to_dict() for p in self.pagos] or [
-                {"metodo": self.metodo_pago, "monto": float(self.total), "proveedor": None, "nro_operacion": None,
-                 "monto_recibido": float(self.monto_recibido) if self.monto_recibido is not None else None,
-                 "vuelto": float(self.vuelto) if self.vuelto is not None else None}],
+            "pagos": [p.to_dict() for p in self.pagos]
+            or [
+                {
+                    "metodo": self.metodo_pago,
+                    "monto": float(self.total),
+                    "proveedor": None,
+                    "nro_operacion": None,
+                    "monto_recibido": float(self.monto_recibido) if self.monto_recibido is not None else None,
+                    "vuelto": float(self.vuelto) if self.vuelto is not None else None,
+                }
+            ],
             "descuento": float(self.descuento or 0),
             "subtotal": float(self.subtotal),
             "igv": float(self.igv),
@@ -518,16 +533,17 @@ class VentaPago(db.Model):
     de la app: con él se concilia contra el cierre del POS o el reporte de Yape.
     Nunca se guarda el número de la tarjeta.
     """
+
     __tablename__ = "venta_pago"
     id = db.Column(db.Integer, primary_key=True)
     venta_id = db.Column(db.Integer, ForeignKey("venta.id", ondelete="CASCADE"), nullable=False, index=True)
     metodo = db.Column(db.String(20), nullable=False)
-    monto = db.Column(db.Numeric(10, 2), nullable=False)       # importe aplicado a la venta
-    monto_recibido = db.Column(db.Numeric(10, 2))              # solo efectivo
+    monto = db.Column(db.Numeric(10, 2), nullable=False)  # importe aplicado a la venta
+    monto_recibido = db.Column(db.Numeric(10, 2))  # solo efectivo
     vuelto = db.Column(db.Numeric(10, 2))
-    proveedor = db.Column(db.String(30))                       # OpenPay, Niubiz, Izipay... / app de la billetera
-    tipo_tarjeta = db.Column(db.String(10))                    # debito | credito
-    marca_tarjeta = db.Column(db.String(20))                   # Visa | Mastercard | American Express | Diners Club
+    proveedor = db.Column(db.String(30))  # OpenPay, Niubiz, Izipay... / app de la billetera
+    tipo_tarjeta = db.Column(db.String(10))  # debito | credito
+    marca_tarjeta = db.Column(db.String(20))  # Visa | Mastercard | American Express | Diners Club
     nro_operacion = db.Column(db.String(30), index=True)
 
     venta = relationship("Venta", back_populates="pagos")
@@ -535,6 +551,7 @@ class VentaPago(db.Model):
     def to_dict(self):
         def num(v):
             return float(v) if v is not None else None
+
         return {
             "id": self.id,
             "metodo": self.metodo,
@@ -550,6 +567,7 @@ class VentaPago(db.Model):
 
 class MovimientoCaja(db.Model):
     """Retiro parcial de efectivo (sangría) autorizado por un supervisor."""
+
     __tablename__ = "movimiento_caja"
     id = db.Column(db.Integer, primary_key=True)
     caja_id = db.Column(db.Integer, ForeignKey("caja.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -583,6 +601,7 @@ class Autorizacion(db.Model):
     Una autorización aprobada entrega un token de un solo uso, válido por
     pocos segundos y solo para la acción (y la venta) indicada.
     """
+
     __tablename__ = "autorizacion"
     id = db.Column(db.Integer, primary_key=True)
     accion = db.Column(db.String(30), nullable=False, index=True)
@@ -593,7 +612,7 @@ class Autorizacion(db.Model):
     monto = db.Column(db.Numeric(10, 2))
     motivo = db.Column(db.String(60))
     comentario = db.Column(db.String(240))
-    detalle = db.Column(db.String(240))        # p. ej. producto retirado del carrito
+    detalle = db.Column(db.String(240))  # p. ej. producto retirado del carrito
     resultado = db.Column(db.String(20), nullable=False)  # aprobada | pin_invalido | bloqueado | rechazada
     token_hash = db.Column(db.String(64), index=True)
     usada = db.Column(db.Boolean, nullable=False, default=False)
@@ -629,6 +648,7 @@ class Devolucion(db.Model):
     cajero que atiende (efectivo) o se extorna al mismo medio electrónico, y ante
     la SUNAT se emite una nota de crédito que modifica la boleta o factura.
     """
+
     __tablename__ = "devolucion"
     __table_args__ = (CheckConstraint("total > 0", name="ck_devolucion_total"),)
 
@@ -640,10 +660,10 @@ class Devolucion(db.Model):
     autorizada_por_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="SET NULL"))
     fecha = db.Column(db.DateTime(timezone=True), nullable=False, default=ahora, index=True)
     motivo = db.Column(db.String(240), nullable=False)
-    cod_motivo = db.Column(db.String(2), nullable=False)    # Catálogo 09 SUNAT: 06 total, 07 por ítem
+    cod_motivo = db.Column(db.String(2), nullable=False)  # Catálogo 09 SUNAT: 06 total, 07 por ítem
     total = db.Column(db.Numeric(10, 2), nullable=False)
     metodo_reembolso = db.Column(db.String(20), nullable=False)  # efectivo | tarjeta | qr | yape | plin
-    nro_operacion = db.Column(db.String(30))                     # extorno en POS o app
+    nro_operacion = db.Column(db.String(30))  # extorno en POS o app
     # Nota de crédito electrónica (mismos nombres que en Venta para reutilizar el servicio SUNAT)
     comprobante_serie = db.Column(db.String(10))
     comprobante_numero = db.Column(db.String(20))
@@ -658,8 +678,13 @@ class Devolucion(db.Model):
     caja = relationship("Caja", back_populates="devoluciones")
     usuario = relationship("Usuario", foreign_keys=[usuario_id])
     autorizada_por = relationship("Usuario", foreign_keys=[autorizada_por_id])
-    detalles = relationship("DevolucionDetalle", back_populates="devolucion", cascade="all, delete-orphan",
-                            order_by="DevolucionDetalle.id", lazy="selectin")
+    detalles = relationship(
+        "DevolucionDetalle",
+        back_populates="devolucion",
+        cascade="all, delete-orphan",
+        order_by="DevolucionDetalle.id",
+        lazy="selectin",
+    )
 
     def to_dict(self):
         return {
@@ -693,10 +718,11 @@ class DevolucionDetalle(db.Model):
     )
     id = db.Column(db.Integer, primary_key=True)
     devolucion_id = db.Column(db.Integer, ForeignKey("devolucion.id", ondelete="CASCADE"), nullable=False, index=True)
-    venta_detalle_id = db.Column(db.Integer, ForeignKey("venta_detalle.id", ondelete="RESTRICT"), nullable=False,
-                                 index=True)
+    venta_detalle_id = db.Column(
+        db.Integer, ForeignKey("venta_detalle.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
     cantidad = db.Column(db.Integer, nullable=False)
-    monto = db.Column(db.Numeric(10, 2), nullable=False)   # importe devuelto (con IGV, neto de descuentos)
+    monto = db.Column(db.Numeric(10, 2), nullable=False)  # importe devuelto (con IGV, neto de descuentos)
     # False: el producto vuelve con falla y va a servicio técnico o merma, no al stock vendible
     reingresa_stock = db.Column(db.Boolean, nullable=False, default=True)
 
@@ -722,5 +748,11 @@ Categoria = Familia
 
 # Modelos de la tienda online (clientes, sedes, promociones y pedidos)
 from .models_tienda import (  # noqa: E402,F401
-    Cliente, CodigoAcceso, Pedido, PedidoDetalle, Promocion, PromocionProducto, Sede,
+    Cliente,
+    CodigoAcceso,
+    Pedido,
+    PedidoDetalle,
+    Promocion,
+    PromocionProducto,
+    Sede,
 )

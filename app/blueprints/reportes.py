@@ -6,8 +6,9 @@ GET /api/reportes/resumen?desde=AAAA-MM-DD&hasta=AAAA-MM-DD
 GET /api/reportes/inventario
     Valorización del inventario y productos con stock bajo o agotado.
 """
+
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from flask import Blueprint, jsonify, request
@@ -16,31 +17,30 @@ from sqlalchemy.orm import joinedload
 
 from ..models import Devolucion, Producto, Venta, VentaDetalle
 from .auth import require_permiso
-from .ventas import ZONA_LIMA, rango_fechas
+from ..services.tiempo import a_local, zona_local
+from .ventas import rango_fechas
 
 bp = Blueprint("reportes", __name__)
-
-
-def _a_lima(dt):
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(ZONA_LIMA)
 
 
 @bp.get("/reportes/resumen")
 @jwt_required()
 def resumen():
     require_permiso("reportes.ver")
-    hoy = datetime.now(ZONA_LIMA).date()
+    hoy = datetime.now(zona_local()).date()
     desde_txt = request.args.get("desde") or (hoy - timedelta(days=29)).isoformat()
     hasta_txt = request.args.get("hasta") or hoy.isoformat()
     inicio, fin = rango_fechas(desde_txt, hasta_txt)
 
-    ventas = (Venta.query
-              .options(joinedload(Venta.detalles).joinedload(VentaDetalle.producto).joinedload(Producto.familia),
-                       joinedload(Venta.usuario), joinedload(Venta.pagos))
-              .filter(Venta.fecha >= inicio, Venta.fecha < fin)
-              .all())
+    ventas = (
+        Venta.query.options(
+            joinedload(Venta.detalles).joinedload(VentaDetalle.producto).joinedload(Producto.familia),
+            joinedload(Venta.usuario),
+            joinedload(Venta.pagos),
+        )
+        .filter(Venta.fecha >= inicio, Venta.fecha < fin)
+        .all()
+    )
 
     completadas = [v for v in ventas if v.estado == "completada"]
     anuladas = [v for v in ventas if v.estado == "anulada"]
@@ -54,7 +54,7 @@ def resumen():
     # Ventas por día (todos los días del rango, aunque no haya ventas)
     por_dia = defaultdict(lambda: {"total": Decimal("0"), "ventas": 0})
     for v in completadas:
-        dia = _a_lima(v.fecha).date().isoformat()
+        dia = a_local(v.fecha).date().isoformat()
         por_dia[dia]["total"] += Decimal(v.total)
         por_dia[dia]["ventas"] += 1
     serie_dias = []
@@ -68,7 +68,9 @@ def resumen():
     por_metodo = defaultdict(lambda: {"total": Decimal("0"), "ventas": 0})
     por_vendedor = defaultdict(lambda: {"total": Decimal("0"), "ventas": 0, "nombre": ""})
     por_familia = defaultdict(lambda: {"total": Decimal("0"), "unidades": 0})
-    por_producto = defaultdict(lambda: {"total": Decimal("0"), "unidades": 0, "nombre": "", "sku": None, "imagen_url": None})
+    por_producto = defaultdict(
+        lambda: {"total": Decimal("0"), "unidades": 0, "nombre": "", "sku": None, "imagen_url": None}
+    )
     for v in completadas:
         for metodo, monto in v.pagos_efectivos():
             por_metodo[metodo]["total"] += monto
@@ -89,9 +91,18 @@ def resumen():
 
     # Cuadre de cajas por cajero (turnos abiertos en el rango)
     from ..models import Caja
+
     cajas = Caja.query.filter(Caja.fecha_apertura >= inicio, Caja.fecha_apertura < fin).all()
-    cuadre = defaultdict(lambda: {"nombre": "", "cajas": 0, "abiertas": 0, "cuadradas": 0,
-                                  "sobrante": Decimal("0"), "faltante": Decimal("0")})
+    cuadre = defaultdict(
+        lambda: {
+            "nombre": "",
+            "cajas": 0,
+            "abiertas": 0,
+            "cuadradas": 0,
+            "sobrante": Decimal("0"),
+            "faltante": Decimal("0"),
+        }
+    )
     for c in cajas:
         fila = cuadre[c.usuario_id]
         fila["nombre"] = c.usuario.nombre_completo if c.usuario else "—"
@@ -136,15 +147,36 @@ def resumen():
         },
         por_dia=serie_dias,
         por_metodo=[{"metodo": k, "total": float(x["total"]), "ventas": x["ventas"]} for k, x in ordenar(por_metodo)],
-        por_vendedor=[{"usuario_id": k, "nombre": x["nombre"], "total": float(x["total"]), "ventas": x["ventas"]}
-                      for k, x in ordenar(por_vendedor)],
-        por_familia=[{"familia": k, "total": float(x["total"]), "unidades": x["unidades"]} for k, x in ordenar(por_familia)],
-        cuadre_cajas=[{"usuario_id": k, "nombre": x["nombre"], "cajas": x["cajas"], "abiertas": x["abiertas"],
-                       "cuadradas": x["cuadradas"], "sobrante": float(x["sobrante"]), "faltante": float(x["faltante"])}
-                      for k, x in sorted(cuadre.items(), key=lambda kv: kv[1]["faltante"], reverse=True)],
-        top_productos=[{"producto_id": k, "nombre": x["nombre"], "sku": x["sku"], "imagen_url": x["imagen_url"],
-                        "unidades": x["unidades"], "total": float(x["total"])}
-                       for k, x in ordenar(por_producto, "unidades")[:10]],
+        por_vendedor=[
+            {"usuario_id": k, "nombre": x["nombre"], "total": float(x["total"]), "ventas": x["ventas"]}
+            for k, x in ordenar(por_vendedor)
+        ],
+        por_familia=[
+            {"familia": k, "total": float(x["total"]), "unidades": x["unidades"]} for k, x in ordenar(por_familia)
+        ],
+        cuadre_cajas=[
+            {
+                "usuario_id": k,
+                "nombre": x["nombre"],
+                "cajas": x["cajas"],
+                "abiertas": x["abiertas"],
+                "cuadradas": x["cuadradas"],
+                "sobrante": float(x["sobrante"]),
+                "faltante": float(x["faltante"]),
+            }
+            for k, x in sorted(cuadre.items(), key=lambda kv: kv[1]["faltante"], reverse=True)
+        ],
+        top_productos=[
+            {
+                "producto_id": k,
+                "nombre": x["nombre"],
+                "sku": x["sku"],
+                "imagen_url": x["imagen_url"],
+                "unidades": x["unidades"],
+                "total": float(x["total"]),
+            }
+            for k, x in ordenar(por_producto, "unidades")[:10]
+        ],
     )
 
 

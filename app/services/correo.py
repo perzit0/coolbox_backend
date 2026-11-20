@@ -5,6 +5,7 @@ y SMTP_PASSWORD = una "contraseña de aplicación" (no la contraseña normal).
 Si SMTP no está configurado, el envío no está disponible y la tienda oculta
 la opción "Código por correo".
 """
+
 import smtplib
 from email.message import EmailMessage
 
