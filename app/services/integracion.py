@@ -78,7 +78,7 @@ ALIAS = {
     "telefono": ("telefono", "celular", "phone", "movil", "telefono_celular", "nro_telefono", "telefono1"),
     "direccion": ("direccion", "domicilio", "address", "direccion_fiscal"),
 }
-LLAVES_LISTA = ("clientes", "data", "results", "items", "registros", "customers", "content", "rows")
+LLAVES_LISTA = ("clientes", "clients", "data", "results", "items", "registros", "customers", "content", "rows")
 LLAVES_SIGUIENTE = ("siguiente", "next", "next_page_url", "next_url")
 REINTENTAR = {408, 425, 429, 500, 502, 503, 504}
 

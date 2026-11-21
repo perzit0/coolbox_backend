@@ -1,125 +1,88 @@
-# API de clientes de COOLBOX (integración entre grupos)
+# API de clientes de COOLBOX — integración con J2F Monitoreo
 
-Documento para el grupo pareado. Describe cómo leer nuestros clientes, cómo enviarnos los suyos
-y cómo leemos nosotros los de ustedes.
+Intercambiamos solo los datos básicos del cliente. Lo demás (IDs internos, fechas,
+origen, persona de contacto) se queda en cada sistema.
 
-## 1. Datos de conexión
+## 1. Conexión
 
 | Dato | Valor |
 | --- | --- |
-| URL base | `https://coolbox-backend-diny.onrender.com/api/integracion` |
-| Autenticación | Cabecera `X-API-Key: <clave>` (también se acepta `Authorization: Bearer <clave>`) |
+| URL | `https://coolbox-backend-diny.onrender.com/api/integracion/clientes` |
+| Autenticación | Cabecera `X-API-Key: <clave>` (también vale `Authorization: Bearer <clave>`) |
 | Formato | JSON (UTF-8) |
-| Límite | 60 peticiones por minuto por IP |
+| Límite | 60 peticiones por minuto |
 
-La clave se la entrega nuestro responsable por un medio privado (no por el chat del curso).
-El servidor está en el plan gratuito de Render: la primera llamada después de un rato sin uso
-puede tardar hasta 1 minuto. Si reciben un error 502 o 503, reintenten.
+- La clave se entrega por privado.
+- El servidor está en el plan gratuito de Render: la primera llamada tras un rato sin uso
+  puede tardar hasta 1 minuto. Si reciben 502 o 503, reintenten.
 
-## 2. Clave única del cliente
+## 2. Datos que intercambiamos
 
-Un cliente se identifica por **tipo de documento + número de documento** (campo `clave`,
-por ejemplo `DNI-45678912` o `RUC-20512345678`). No usamos solo el número: un DNI y un
-carné de extranjería pueden coincidir.
+| Dato | Campo nuestro | Su campo | Regla |
+| --- | --- | --- | --- |
+| Tipo de documento | `tipo_documento` | `document_type` | `DNI`, `RUC`, `CE` o `PASAPORTE` |
+| Número de documento | `numero_documento` | `document_number` | DNI 8 dígitos; RUC 11 dígitos (inicia con 10, 15, 17 o 20); CE 9 a 12 letras o números; pasaporte 6 a 12 letras o números |
+| Nombre o razón social | `nombre_completo` | `business_name` | Obligatorio |
+| Teléfono | `telefono` | `phone` | Opcional, número peruano sin prefijo |
+| Correo | `email` | `email` | Opcional |
+| Dirección | `direccion` | `address` | Opcional |
 
-Tipos de documento: `DNI`, `CE`, `RUC`, `PASAPORTE`. También enviamos el código del
-catálogo 06 de SUNAT en `codigo_tipo_documento` (1 DNI, 4 CE, 6 RUC, 7 pasaporte).
+El cliente se identifica por **tipo + número de documento**: si llega dos veces, no se duplica.
 
 ## 3. Leer nuestros clientes
 
 ```
 GET /api/integracion/clientes?pagina=1&por_pagina=100
-GET /api/integracion/clientes?desde=2026-11-20T00:00:00Z     (solo creados o modificados desde esa fecha)
-GET /api/integracion/clientes/DNI/45678912                  (un cliente)
-GET /api/integracion/estructura                             (esta misma descripción en JSON)
+GET /api/integracion/clientes?desde=2026-11-20T00:00:00Z   (solo nuevos o modificados desde esa fecha)
+GET /api/integracion/clientes/DNI/45678912                (un cliente)
 ```
 
-Respuesta del listado:
+Respuesta (resumida a los campos que deben usar):
 
 ```json
 {
-  "sistema": "COOLBOX - Grupo 8",
-  "clave_unica": ["tipo_documento", "numero_documento"],
-  "total": 125,
+  "total": 2,
   "pagina": 1,
-  "por_pagina": 100,
-  "total_paginas": 2,
-  "siguiente": "https://.../api/integracion/clientes?pagina=2&por_pagina=100",
+  "total_paginas": 1,
+  "siguiente": null,
   "clientes": [
     {
-      "clave": "DNI-45678912",
       "tipo_documento": "DNI",
-      "codigo_tipo_documento": "1",
       "numero_documento": "45678912",
-      "nombres": "María",
-      "apellidos": "Salas Ruiz",
-      "razon_social": null,
       "nombre_completo": "María Salas Ruiz",
-      "email": "maria@gmail.com",
       "telefono": "987654321",
-      "direccion": null,
-      "fecha_registro": "2026-11-20T21:00:00+00:00",
-      "fecha_actualizacion": "2026-11-20T21:00:00+00:00"
+      "email": "maria@gmail.com",
+      "direccion": null
     }
   ]
 }
 ```
 
-Para empresas (RUC) viene `razon_social` y `nombres`/`apellidos` pueden venir vacíos.
-Mientras `siguiente` no sea `null`, hay más páginas.
+Mientras `siguiente` no sea `null`, hay más páginas. La respuesta trae otros campos
+(`nombres`, `apellidos`, `razon_social`, fechas); pueden ignorarlos.
 
-## 4. Enviarnos sus clientes (opcional)
+**Para guardar en su sistema:** usen `nombre_completo` como `business_name`. Si un CE
+nuestro trae letras, su validación actual (solo números) lo rechazará; sugerimos aceptar
+letras como hacemos nosotros.
 
-Si prefieren enviarnos sus clientes en lugar de que los leamos:
+## 4. Cómo leemos los clientes de ustedes
 
-```
-POST /api/integracion/clientes
-Content-Type: application/json
-X-API-Key: <clave>
+Leemos `GET /api/clients/` iniciando sesión antes con `POST /api/auth/login`
+(`identifier` y `password`) y usando el `access_token` como `Authorization: Bearer`.
 
-{ "clientes": [ { "tipo_documento": "DNI", "numero_documento": "71234567", "nombres": "Pedro", "apellidos": "Lezama" } ] }
-```
+Necesitamos de ustedes:
 
-Respuesta:
+1. **URL de su backend en producción.**
+2. **Un usuario solo para la integración**, con **un único perfil** que tenga permiso
+   `view_all` o `admin`. Debe ser exclusivo: cada inicio de sesión en su sistema cierra las
+   demás sesiones de ese usuario.
 
-```json
-{ "lote": 12, "recibidos": 5, "insertados": 4, "actualizados": 0, "sin_cambios": 1,
-  "duplicados": 0, "rechazados": 0, "detalle_rechazados": [] }
-```
+Lo que recibimos pasa por una tabla de desembarco y se valida antes de entrar a nuestro
+maestro. Se rechaza si el documento no cumple las reglas del punto 2 o si no tiene nombre.
+Si su API no responde, reintentamos 3 veces (a los 2, 4 y 8 segundos).
 
-Se puede enviar el mismo cliente varias veces: no se duplica.
+## 5. Prueba rápida
 
-## 5. Cómo leemos los clientes de ustedes
-
-Necesitamos de su lado:
-
-1. La URL de su listado de clientes (por ejemplo `https://su-api/api/clientes`).
-2. Cómo autenticarnos: una clave en una cabecera (indiquen el nombre de la cabecera) o un
-   usuario y contraseña para pedir un token.
-3. Si paginan, que la respuesta indique la página siguiente (`siguiente`, `next` o
-   `pagina`/`total_paginas`).
-
-Reconocemos solos los nombres de campo más comunes (`tipo_documento`, `tipoDoc`,
-`numero_documento`, `nro_documento`, `dni`, `ruc`, `nombres`, `apellidos`,
-`apellido_paterno`, `razon_social`, `nombre_completo`, `email`, `correo`, `telefono`,
-`celular`, `direccion`...). Si usan otros nombres, nos los indican y los configuramos.
-
-Lo que recibimos se guarda tal cual en una **tabla de desembarco (stage)**. Luego cada registro
-se valida y pasa a nuestro maestro de clientes:
-
-| Resultado | Cuándo |
-| --- | --- |
-| insertado | Cliente nuevo |
-| actualizado | Ya existía: se completaron datos que teníamos vacíos (no reemplazamos los nuestros) |
-| sin_cambios | Ya existía con los mismos datos |
-| duplicado | Vino repetido en el mismo envío |
-| rechazado | Documento inválido (DNI de 8 dígitos, RUC de 11 que empieza con 10, 15, 17 o 20, CE de 9 a 12, pasaporte de 6 a 12) o sin nombre |
-
-Si su API no responde, reintentamos 3 veces (a los 2, 4 y 8 segundos). Cada llamada, de
-entrada o de salida, queda registrada en nuestra traza del API.
-
-## 6. Prueba rápida
-
-```bash
-curl -H "X-API-Key: <clave>" "https://coolbox-backend-diny.onrender.com/api/integracion/clientes?por_pagina=5"
+```powershell
+curl.exe -H "X-API-Key: <clave>" "https://coolbox-backend-diny.onrender.com/api/integracion/clientes?por_pagina=5"
 ```
