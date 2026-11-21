@@ -253,9 +253,19 @@ class Pedido(db.Model):
     comprobantes = relationship(
         "PedidoComprobante", back_populates="pedido", cascade="all, delete-orphan", order_by="PedidoComprobante.id"
     )
+    devoluciones = relationship(
+        "PedidoDevolucion", back_populates="pedido", order_by="PedidoDevolucion.id", lazy="selectin"
+    )
 
     def comprobante(self, tipo):
         return next((c for c in self.comprobantes if c.tipo == tipo), None)
+
+    @property
+    def estado_devolucion(self):
+        """None, "parcial" o "total" según lo devuelto después de la entrega."""
+        if not self.devoluciones:
+            return None
+        return "total" if all(d.cantidad_devuelta >= d.cantidad for d in self.detalles) else "parcial"
 
     def to_dict(self, include_detalles=True):
         d = {
@@ -291,6 +301,9 @@ class Pedido(db.Model):
             "motivo_cancelacion": self.motivo_cancelacion,
             "cantidad_items": sum(d.cantidad for d in self.detalles),
             "comprobantes": [c.to_dict() for c in self.comprobantes],
+            "devoluciones": [d.to_dict() for d in self.devoluciones],
+            "monto_devuelto": float(sum((d.total for d in self.devoluciones), 0)),
+            "estado_devolucion": self.estado_devolucion,
         }
         if include_detalles:
             d["detalles"] = [x.to_dict() for x in self.detalles]
@@ -354,6 +367,11 @@ class PedidoDetalle(db.Model):
 
     pedido = relationship("Pedido", back_populates="detalles")
     producto = relationship("Producto", lazy="joined")
+    devueltos = relationship("PedidoDevolucionDetalle", back_populates="pedido_detalle", lazy="selectin")
+
+    @property
+    def cantidad_devuelta(self):
+        return sum(d.cantidad for d in self.devueltos)
 
     def to_dict(self):
         p = self.producto
@@ -369,6 +387,105 @@ class PedidoDetalle(db.Model):
             "descuento": float(self.descuento or 0),
             "subtotal": float(self.subtotal),
             "promocion_nombre": self.promocion_nombre,
+            "cantidad_devuelta": self.cantidad_devuelta,
+        }
+
+
+class PedidoDevolucion(db.Model):
+    """Devolución de productos de un pedido online ya entregado.
+
+    El cliente vuelve a la sede con el producto dentro del plazo (DEVOLUCION_DIAS_MAX desde la
+    entrega). El registro y el reingreso al stock los hace el procedimiento sp_pedido_devolver;
+    el dinero se extorna al mismo medio con el que pagó y ante la SUNAT se emite una nota de
+    crédito que modifica la boleta del pedido (06 si es total, 07 si es por ítem). Las columnas
+    del comprobante se llaman igual que en Venta para usar el mismo servicio SUNAT.
+    """
+
+    __tablename__ = "pedido_devolucion"
+    __table_args__ = (CheckConstraint("total > 0", name="ck_pedido_devolucion_total"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    codigo = db.Column(db.String(20), nullable=False, unique=True)  # DW-000001
+    pedido_id = db.Column(db.Integer, ForeignKey("pedido.id", ondelete="RESTRICT"), nullable=False, index=True)
+    usuario_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False)
+    autorizada_por_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="SET NULL"))
+    fecha = db.Column(db.DateTime(timezone=True), nullable=False, default=ahora, index=True)
+    motivo = db.Column(db.String(240), nullable=False)
+    cod_motivo = db.Column(db.String(2), nullable=False)
+    total = db.Column(db.Numeric(10, 2), nullable=False)
+    metodo_reembolso = db.Column(db.String(20), nullable=False)
+    nro_operacion = db.Column(db.String(30))
+    comprobante_serie = db.Column(db.String(10))
+    comprobante_numero = db.Column(db.String(20))
+    comprobante_api_id = db.Column(db.Integer)
+    comprobante_pdf = db.Column(db.String(300))
+    comprobante_xml = db.Column(db.String(300))
+    estado_sunat = db.Column(db.String(15), nullable=False, default="pendiente")
+    sunat_mensaje = db.Column(db.String(300))
+    sunat_intentos = db.Column(db.Integer, nullable=False, default=0)
+
+    pedido = relationship("Pedido", back_populates="devoluciones")
+    usuario = relationship("Usuario", foreign_keys=[usuario_id])
+    autorizada_por = relationship("Usuario", foreign_keys=[autorizada_por_id])
+    detalles = relationship(
+        "PedidoDevolucionDetalle",
+        back_populates="devolucion",
+        cascade="all, delete-orphan",
+        order_by="PedidoDevolucionDetalle.id",
+        lazy="selectin",
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "codigo": self.codigo,
+            "fecha": iso(self.fecha),
+            "motivo": self.motivo,
+            "cod_motivo": self.cod_motivo,
+            "total": float(self.total),
+            "metodo_reembolso": self.metodo_reembolso,
+            "nro_operacion": self.nro_operacion,
+            "usuario_nombre": self.usuario.nombre_completo if self.usuario else None,
+            "autorizada_por": self.autorizada_por.nombre_completo if self.autorizada_por else None,
+            "nota_credito": f"{self.comprobante_serie}-{self.comprobante_numero}" if self.comprobante_serie else None,
+            "estado_sunat": self.estado_sunat,
+            "sunat_mensaje": self.sunat_mensaje,
+            "tiene_pdf": bool(self.comprobante_pdf),
+            "tiene_xml": bool(self.comprobante_xml),
+            "detalles": [d.to_dict() for d in self.detalles],
+        }
+
+
+class PedidoDevolucionDetalle(db.Model):
+    __tablename__ = "pedido_devolucion_detalle"
+    __table_args__ = (
+        CheckConstraint("cantidad > 0", name="ck_pedido_devolucion_detalle_cantidad"),
+        UniqueConstraint("devolucion_id", "pedido_detalle_id", name="uq_pedido_devolucion_linea"),
+    )
+    id = db.Column(db.Integer, primary_key=True)
+    devolucion_id = db.Column(
+        db.Integer, ForeignKey("pedido_devolucion.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    pedido_detalle_id = db.Column(
+        db.Integer, ForeignKey("pedido_detalle.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    cantidad = db.Column(db.Integer, nullable=False)
+    monto = db.Column(db.Numeric(10, 2), nullable=False)
+    reingresa_stock = db.Column(db.Boolean, nullable=False, default=True)
+
+    devolucion = relationship("PedidoDevolucion", back_populates="detalles")
+    pedido_detalle = relationship("PedidoDetalle", back_populates="devueltos")
+
+    def to_dict(self):
+        pd = self.pedido_detalle
+        return {
+            "id": self.id,
+            "pedido_detalle_id": self.pedido_detalle_id,
+            "producto_nombre": pd.producto.nombre if pd and pd.producto else None,
+            "producto_sku": pd.producto.sku if pd and pd.producto else None,
+            "cantidad": self.cantidad,
+            "monto": float(self.monto),
+            "reingresa_stock": self.reingresa_stock,
         }
 
 

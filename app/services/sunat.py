@@ -225,6 +225,32 @@ def _cuerpo_nota_pedido(nota):
     return cuerpo
 
 
+def _cuerpo_nota_devolucion_pedido(devolucion):
+    """Nota de crédito por la devolución de productos de un pedido ya entregado (06 total, 07 por ítem)."""
+    pedido = devolucion.pedido
+    boleta = pedido.comprobante("boleta")
+    cuerpo = _cuerpo_comun(_cfg("SUNAT_SERIE_NC_BOLETA"), devolucion.fecha)
+    cuerpo.update(
+        {
+            "tipo_doc_afectado": "03",
+            "num_doc_afectado": f"{boleta.comprobante_serie}-{boleta.comprobante_numero}",
+            "cod_motivo": devolucion.cod_motivo,
+            "des_motivo": devolucion.motivo[:250],
+            "client": _cliente_pedido(pedido),
+            "detalles": [
+                _detalle(
+                    d.pedido_detalle.producto,
+                    d.pedido_detalle.producto_id,
+                    d.cantidad,
+                    Decimal(str(d.monto)) / d.cantidad,
+                )
+                for d in devolucion.detalles
+            ],
+        }
+    )
+    return cuerpo
+
+
 def archivo_local(ruta):
     """Ruta absoluta de un comprobante guardado, solo si está dentro de COMPROBANTES_DIR
     (evita que una ruta manipulada en la BD entregue otros archivos del servidor)."""
@@ -338,3 +364,8 @@ def emitir_pedido(comprobante):
     """Boleta o nota de crédito de un pedido online (fila de PedidoComprobante)."""
     armar = _cuerpo_boleta_pedido if comprobante.tipo == "boleta" else _cuerpo_nota_pedido
     return _emitir(comprobante, comprobante.tipo, lambda: armar(comprobante))
+
+
+def emitir_nota_devolucion_pedido(devolucion):
+    """Nota de crédito de la devolución de un pedido online entregado."""
+    return _emitir(devolucion, "nota_credito", lambda: _cuerpo_nota_devolucion_pedido(devolucion))

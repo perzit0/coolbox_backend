@@ -28,7 +28,7 @@ from flask_jwt_extended import jwt_required
 from ..errors import ApiError
 from ..extensions import db, limiter
 from ..models import Producto, Usuario, Venta, VentaDetalle, VentaPago, ahora
-from ..services import consulta_documento
+from ..services import consulta_documento, procedimientos
 from ..services import promociones as promo_svc
 from ..services import sunat as sunat_svc
 from ..services.autorizacion import consumir_token
@@ -151,8 +151,19 @@ def config_caja():
 @jwt_required()
 @limiter.limit(lambda: current_app.config["LIMITE_CONSULTAS"])
 def consultar_documento(numero):
-    """Nombre del cliente según RENIEC (DNI) o razón social según SUNAT (RUC)."""
+    """Nombre del cliente: primero en nuestro maestro de clientes (incluye los recibidos del
+    grupo pareado); si no está, en RENIEC (DNI) o SUNAT (RUC)."""
     require_permiso("ventas.crear")
+    if procedimientos.disponibles():
+        encontrado = procedimientos.columna("sp_cliente_buscar", "cliente", None, numero)
+        if encontrado:
+            c = encontrado[0]
+            return jsonify(
+                documento=c["nro_documento"],
+                tipo=c["tipo_documento"],
+                nombre=c["nombre_completo"],
+                fuente="CLIENTES",
+            )
     return jsonify(consulta_documento.consultar(numero))
 
 
@@ -339,7 +350,7 @@ def crear_venta():
         cantidades[pid] = cantidades.get(pid, 0) + cantidad
 
     # Bloqueamos los productos afectados para evitar sobreventa concurrente
-    productos = Producto.query.filter(Producto.id.in_(cantidades.keys())).with_for_update().all()
+    productos = Producto.query.filter(Producto.id.in_(cantidades.keys())).with_for_update(of=Producto).all()
     por_id = {p.id: p for p in productos}
 
     for pid, cantidad in cantidades.items():
@@ -484,7 +495,7 @@ def anular_venta(venta_id):
 
     # Se bloquea la fila: si dos supervisores anulan a la vez, el segundo espera
     # y encuentra la venta ya anulada (el stock no se devuelve dos veces).
-    venta = Venta.query.filter_by(id=venta_id).with_for_update().first()
+    venta = Venta.query.filter_by(id=venta_id).with_for_update(of=Venta).first()
     if not venta:
         raise ApiError("venta_no_encontrada", "La venta no existe.", 404)
     if venta.estado == "anulada":

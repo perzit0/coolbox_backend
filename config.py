@@ -163,3 +163,32 @@ class Config:
     CONSULTA_RUC_URL = _texto("CONSULTA_RUC_URL", "https://api.decolecta.com/v1/sunat/ruc?numero={numero}")
     CONSULTA_TOKEN = _texto("CONSULTA_TOKEN")
     CONSULTA_TIMEOUT = _entero("CONSULTA_TIMEOUT", 8)
+
+    # ------------------------------------------------------------ integración de clientes (grupo pareado)
+    # Nombre con el que nuestro sistema se identifica en la API.
+    INTEGRACION_SISTEMA = _texto("INTEGRACION_SISTEMA", "COOLBOX")
+    # Ida: claves de los sistemas que pueden leer o enviarnos clientes. Formato
+    # "Nombre=clave,Otro=clave2"; cada clave con al menos 24 caracteres aleatorios.
+    INTEGRACION_API_KEYS = _texto("INTEGRACION_API_KEYS")
+    LIMITE_INTEGRACION = _texto("LIMITE_INTEGRACION", "60 per minute")
+    # Vuelta: API de clientes del otro grupo.
+    INTEGRACION_SOCIO_NOMBRE = _texto("INTEGRACION_SOCIO_NOMBRE", "Grupo pareado")
+    INTEGRACION_SOCIO_URL = _texto("INTEGRACION_SOCIO_URL")  # URL completa del listado de clientes
+    INTEGRACION_SOCIO_API_KEY = _texto("INTEGRACION_SOCIO_API_KEY")
+    INTEGRACION_SOCIO_HEADER = _texto("INTEGRACION_SOCIO_HEADER", "X-API-Key")  # o Authorization
+    INTEGRACION_SOCIO_ESQUEMA = _texto("INTEGRACION_SOCIO_ESQUEMA")  # p. ej. Bearer
+    # Si su API pide iniciar sesión para obtener un token (opcional)
+    INTEGRACION_SOCIO_LOGIN_URL = _texto("INTEGRACION_SOCIO_LOGIN_URL")
+    INTEGRACION_SOCIO_USUARIO = _texto("INTEGRACION_SOCIO_USUARIO")
+    INTEGRACION_SOCIO_PASSWORD = _texto("INTEGRACION_SOCIO_PASSWORD")
+    INTEGRACION_SOCIO_CAMPO_USUARIO = _texto("INTEGRACION_SOCIO_CAMPO_USUARIO", "email")
+    INTEGRACION_SOCIO_CAMPO_PASSWORD = _texto("INTEGRACION_SOCIO_CAMPO_PASSWORD", "password")
+    # JSON con nuestro campo -> su campo, solo si sus nombres no se reconocen solos.
+    # Ej.: {"nro_documento": "num_doc", "tipo_documento": "id_tipo"}
+    INTEGRACION_SOCIO_MAPEO = _texto("INTEGRACION_SOCIO_MAPEO")
+    # Reintentos si su API no responde (espera 2 s, 4 s, 8 s...)
+    INTEGRACION_REINTENTOS = _entero("INTEGRACION_REINTENTOS", 3)
+    INTEGRACION_ESPERA_SEGUNDOS = _decimal("INTEGRACION_ESPERA_SEGUNDOS", 2)
+    INTEGRACION_TIMEOUT = _entero("INTEGRACION_TIMEOUT", 20)
+    INTEGRACION_MAX_PAGINAS = _entero("INTEGRACION_MAX_PAGINAS", 50)
+    INTEGRACION_MAX_REGISTROS = _entero("INTEGRACION_MAX_REGISTROS", 5000)

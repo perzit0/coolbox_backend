@@ -755,7 +755,17 @@ from .models_tienda import (  # noqa: E402,F401
     Pedido,
     PedidoComprobante,
     PedidoDetalle,
+    PedidoDevolucion,
+    PedidoDevolucionDetalle,
     Promocion,
     PromocionProducto,
     Sede,
+)
+
+# Maestro de clientes e integración con el grupo pareado
+from .models_integracion import (  # noqa: E402,F401
+    ApiTraza,
+    ClienteStage,
+    IntegracionLote,
+    MaestroCliente,
 )

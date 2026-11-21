@@ -43,7 +43,8 @@ defecto, está en `.env.example`. Las principales:
 | `POS_PROVEEDOR` | POS de la tienda (simulado en este proyecto). |
 | `SUNAT_*`, `COMPROBANTES_DIR` | API de facturación y carpeta de comprobantes. |
 | `CONSULTA_TOKEN` | Token del servicio de consulta de DNI/RUC (autocompleta el cliente). |
-| `DEVOLUCION_DIAS_MAX` | Plazo de devolución. |
+| `DEVOLUCION_DIAS_MAX` | Plazo de devolución (caja y pedidos online entregados). |
+| `INTEGRACION_*` | API de clientes con el grupo pareado: claves de entrada, URL y clave de su API, reintentos. |
 
 ## Seguridad
 
@@ -53,8 +54,12 @@ defecto, está en `.env.example`. Las principales:
 - JWT firmado con clave del entorno; el rol activo viaja en el token y se valida en cada endpoint.
 - CORS restringido a los orígenes de `FRONTEND_ORIGIN`; cabeceras de seguridad (nosniff, frame DENY,
   CSP, HSTS en https) y límite de tamaño de petición.
-- Sin SQL escrito a mano en la lógica: todo pasa por el ORM con parámetros. Las únicas sentencias de texto
-  son las migraciones ligeras de estructura (`app/services/schema.py`), con nombres fijos del propio código.
+- Sin SQL en el código de la aplicación: los módulos nuevos (maestro de clientes, integración, devolución de
+  pedidos online) usan procedimientos almacenados de `db/procedimientos.sql`; el resto usa el ORM con
+  parámetros. Las únicas sentencias de texto son las migraciones ligeras de estructura
+  (`app/services/schema.py`), con nombres fijos del propio código.
+- La API de clientes para el otro grupo exige clave (`X-API-Key`), tiene límite de peticiones y deja traza
+  de cada llamada.
 - Los PDF/XML solo se entregan si están dentro de `COMPROBANTES_DIR`; las imágenes solo aceptan https o
   PNG/JPEG/WebP/GIF en base64 (no SVG).
 
@@ -211,3 +216,24 @@ El sistema se concentra en la venta en tienda y el control de caja. Roles: **Adm
   pedidos listos, entrega validando el documento del titular o cancela (el stock vuelve).
 - Pagos con tarjeta registran la marca: Visa, Mastercard, American Express o Diners Club.
 - Catálogo ampliado a 145 productos (impresoras, Starlink, smart home, cargadores...).
+
+## Novedades v5.0 — Procedimientos almacenados e integración de clientes
+
+- **Procedimientos almacenados** (`db/procedimientos.sql`, PostgreSQL): el backend los instala al arrancar
+  y los invoca por nombre con parámetros (`app/services/procedimientos.py`), sin armar SQL. Los errores de
+  negocio del procedimiento llegan como respuestas HTTP con su mensaje.
+- **Maestro de clientes** (`/api/maestro-clientes`): un registro por cliente con clave única tipo + número de
+  documento. Se alimenta solo (triggers) de las ventas en caja y de las cuentas de la tienda online, y también
+  se mantiene a mano o con la integración. La caja busca primero aquí antes de RENIEC/SUNAT.
+- **Integración con el grupo pareado** (`/api/integracion`, ver `docs/API_CLIENTES.md`):
+  - Ida: exponemos nuestros clientes con clave, paginados y con `?desde=` para pedir solo lo nuevo; también
+    recibimos los que nos envíen por `POST`.
+  - Vuelta: leemos su API (página por página, con reintentos 2 s, 4 s, 8 s), guardamos todo en la tabla de
+    desembarco `cliente_stage` y pasamos al maestro solo lo válido y no repetido. No se pisan los datos que
+    ya teníamos: solo se completan los vacíos.
+  - Traza del API (`api_traza`): hora, sistema, resultado, intento, duración y cantidad de registros.
+- **Devolución de pedidos online entregados** (`POST /api/pedidos-online/<id>/devoluciones`): dentro del
+  plazo desde la entrega, con PIN de supervisor, reembolso al mismo medio de pago y nota de crédito (06 total,
+  07 por ítem). El cliente ve y descarga la nota en "Mis compras".
+- **Corrección**: en PostgreSQL las ventas en caja y los pedidos online fallaban al bloquear el stock
+  (`FOR UPDATE` con la carga conjunta de familia/marca). Ahora se bloquea solo la tabla principal.

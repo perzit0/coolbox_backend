@@ -8,18 +8,28 @@ POST /api/pedidos-online/<id>/entregar         {nro_documento}  (se valida el do
 POST /api/pedidos-online/<id>/cancelar         {motivo}         (el stock vuelve al inventario)
 POST /api/pedidos-online/<id>/comprobante/<tipo>            (reintenta boleta o nota de crédito)
 GET  /api/pedidos-online/<id>/comprobante/<tipo>/<formato>  (PDF o XML guardado localmente)
+POST /api/pedidos-online/<id>/devoluciones                  (devolución después de la entrega)
+POST /api/pedidos-online/devoluciones/<id>/comprobante      (reintenta su nota de crédito)
+GET  /api/pedidos-online/devoluciones/<id>/comprobante/<formato>
 
 Comprobantes: la boleta se emite cuando el pedido queda pagado. Si un pedido pagado se cancela
 (no se entregó), se emite una nota de crédito por anulación de la operación.
+
+Devoluciones: un pedido ya entregado se puede devolver (todo o parte) dentro de
+DEVOLUCION_DIAS_MAX días desde la entrega, con el PIN de un supervisor. El registro y el
+reingreso al stock los hace el procedimiento almacenado sp_pedido_devolver; el dinero se
+extorna al mismo medio de pago y se emite la nota de crédito que modifica la boleta.
 """
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, current_app, jsonify, request, send_file
 from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
 from ..extensions import db
-from ..models import Pedido, PedidoComprobante, Sede, ahora
+from ..models import Pedido, PedidoComprobante, PedidoDevolucion, Sede, ahora
+from ..services import procedimientos as sp
 from ..services import sunat as sunat_svc
+from ..services.autorizacion import consumir_token
 from ..services.inventario import mover_stock
 from .auth import _usuario_actual, require_permiso
 from .ventas import rango_fechas
@@ -212,4 +222,81 @@ def descargar_comprobante(pid, tipo, formato):
     archivo = sunat_svc.archivo_local(ruta)
     if not archivo:
         raise ApiError("comprobante_no_disponible", "El comprobante aún no está disponible.", 404)
+    return send_file(archivo, as_attachment=False)
+
+
+# ------------------------------------------------------------------ devoluciones después de la entrega
+
+
+def _emitir_nota_devolucion(devolucion):
+    try:
+        sunat_svc.emitir_nota_devolucion_pedido(devolucion)
+        db.session.commit()
+    except Exception as exc:  # la devolución ya está registrada; la nota queda para reintentar
+        db.session.rollback()
+        current_app.logger.error("Nota de crédito de %s no emitida: %s", devolucion.codigo, exc)
+
+
+@bp.post("/pedidos-online/<int:pid>/devoluciones")
+@jwt_required()
+def devolver(pid):
+    require_permiso(PERMISO)
+    sp.exigir()
+    usuario = _usuario_actual()
+    pedido = _get(pid)
+    data = request.get_json(silent=True) or {}
+    items = data.get("items")
+    autorizacion = consumir_token(data.get("autorizacion_token"), "DEVOLUCION", usuario)
+    devolucion_id = sp.valor(
+        "sp_pedido_devolver",
+        pedido.id,
+        usuario.id,
+        autorizacion.supervisor_id,
+        data.get("motivo"),
+        (data.get("metodo_reembolso") or "").strip().lower(),
+        data.get("nro_operacion"),
+        sp.json_param(items if isinstance(items, list) else []),
+        current_app.config.get("DEVOLUCION_DIAS_MAX", 7),
+        current_app.config.get("ZONA_HORARIA_HORAS", -5),
+    )
+    db.session.commit()  # devolución, stock y uso del PIN en la misma transacción
+    devolucion = db.session.get(PedidoDevolucion, devolucion_id)
+    _emitir_nota_devolucion(devolucion)
+    db.session.refresh(pedido)
+    return (
+        jsonify(
+            pedido=pedido.to_dict(),
+            devolucion=devolucion.to_dict(),
+            mensaje=(
+                f"Devolución {devolucion.codigo} registrada por S/ {devolucion.total}. "
+                + (
+                    "Se emitió la nota de crédito."
+                    if devolucion.estado_sunat == "aceptado"
+                    else "La nota de crédito quedó pendiente: reintente desde el pedido."
+                )
+            ),
+        ),
+        201,
+    )
+
+
+@bp.post("/pedidos-online/devoluciones/<int:did>/comprobante")
+@jwt_required()
+def reintentar_nota_devolucion(did):
+    require_permiso(PERMISO)
+    devolucion = db.get_or_404(PedidoDevolucion, did)
+    if devolucion.estado_sunat != "aceptado":
+        _emitir_nota_devolucion(devolucion)
+    return jsonify(pedido=devolucion.pedido.to_dict(), devolucion=devolucion.to_dict())
+
+
+@bp.get("/pedidos-online/devoluciones/<int:did>/comprobante/<formato>")
+@jwt_required()
+def descargar_nota_devolucion(did, formato):
+    require_permiso(PERMISO)
+    devolucion = db.get_or_404(PedidoDevolucion, did)
+    ruta = {"pdf": devolucion.comprobante_pdf, "xml": devolucion.comprobante_xml}.get(formato)
+    archivo = sunat_svc.archivo_local(ruta)
+    if not archivo:
+        raise ApiError("comprobante_no_disponible", "La nota de crédito aún no está disponible.", 404)
     return send_file(archivo, as_attachment=False)

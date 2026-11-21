@@ -139,7 +139,7 @@ def crear_devolucion(venta_id):
     data = request.get_json(silent=True) or {}
 
     # Se bloquea la venta: dos devoluciones simultáneas no pueden superar lo vendido.
-    venta = Venta.query.filter_by(id=venta_id).with_for_update().first()
+    venta = Venta.query.filter_by(id=venta_id).with_for_update(of=Venta).first()
     _validar_venta(venta)
     motivo = (data.get("motivo") or "").strip()
     if len(motivo) < 10:

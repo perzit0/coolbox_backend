@@ -3,8 +3,10 @@
 `db.create_all()` crea tablas nuevas pero no agrega columnas a tablas que ya
 existen (como la BD de Supabase en producción). Aquí se agregan las columnas
 e índices nuevos de forma idempotente, funcionando tanto en PostgreSQL como
-en SQLite.
+en SQLite. En PostgreSQL además se instalan los procedimientos almacenados.
 """
+
+from pathlib import Path
 
 from sqlalchemy import inspect, text
 
@@ -106,20 +108,27 @@ def aplicar_migraciones_ligeras():
             with db.engine.begin() as conn:
                 conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS {nombre} ON {tabla} ({columna})"))
 
-    _activar_rls(dialecto)
+
+ARCHIVO_PROCEDIMIENTOS = Path(__file__).resolve().parents[2] / "db" / "procedimientos.sql"
 
 
-def _activar_rls(dialecto):
-    """Supabase publica las tablas de `public` por su API REST. Con RLS activo y sin políticas,
-    esa API no puede leer ni escribir nada. El backend se conecta como dueño de las tablas,
-    así que no le afecta. Es idempotente: solo actúa en tablas que aún no tienen RLS."""
-    if dialecto != "postgresql":
-        return
-    with db.engine.begin() as conn:
-        tablas = (
-            conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND NOT rowsecurity"))
-            .scalars()
-            .all()
-        )
-        for tabla in tablas:
-            conn.execute(text(f'ALTER TABLE public."{tabla}" ENABLE ROW LEVEL SECURITY'))
+def instalar_procedimientos():
+    """Crea los procedimientos almacenados, triggers y RLS de db/procedimientos.sql.
+
+    El archivo se ejecuta completo en una sola transacción: si algo falla, quedan los
+    procedimientos anteriores. SQLite (pruebas locales) no tiene procedimientos.
+    """
+    if db.engine.dialect.name != "postgresql":
+        return False
+    contenido = ARCHIVO_PROCEDIMIENTOS.read_text(encoding="utf-8")
+    conexion = db.engine.raw_connection()
+    try:
+        with conexion.cursor() as cursor:
+            cursor.execute(contenido)
+        conexion.commit()
+        return True
+    except Exception:
+        conexion.rollback()
+        raise
+    finally:
+        conexion.close()

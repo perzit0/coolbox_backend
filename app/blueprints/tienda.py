@@ -277,7 +277,9 @@ def _lineas(items, bloquear=False):
             cantidades[pid] = min(cantidades.get(pid, 0) + q, 20)
     q = Producto.query.filter(Producto.id.in_(cantidades.keys()))
     if bloquear:
-        q = q.with_for_update()
+        # OF producto: solo se bloquean los productos (PostgreSQL no permite bloquear el
+        # lado opcional de los LEFT JOIN con familia, subfamilia y marca).
+        q = q.with_for_update(of=Producto)
     productos = {p.id: p for p in q.all()}
     return [(productos[pid], q) for pid, q in cantidades.items() if pid in productos and productos[pid].activo]
 
@@ -827,4 +829,18 @@ def descargar_comprobante_pedido(codigo, tipo, formato):
     archivo = sunat_svc.archivo_local(ruta)
     if not archivo:
         raise ApiError("comprobante_no_disponible", "El comprobante aún no está disponible.", 404)
+    return send_file(archivo, as_attachment=False)
+
+
+@bp.get("/clientes/me/pedidos/<codigo>/devoluciones/<int:did>/<formato>")
+@jwt_required()
+def descargar_nota_devolucion(codigo, did, formato):
+    """Nota de crédito de una devolución de SU pedido (solo el dueño de la cuenta)."""
+    cliente = _cliente_actual()
+    pedido = Pedido.query.filter_by(codigo=codigo.upper(), cliente_id=cliente.id).first()
+    devolucion = next((d for d in pedido.devoluciones if d.id == did), None) if pedido else None
+    ruta = {"pdf": devolucion.comprobante_pdf, "xml": devolucion.comprobante_xml}.get(formato) if devolucion else None
+    archivo = sunat_svc.archivo_local(ruta)
+    if not archivo:
+        raise ApiError("comprobante_no_disponible", "La nota de crédito aún no está disponible.", 404)
     return send_file(archivo, as_attachment=False)

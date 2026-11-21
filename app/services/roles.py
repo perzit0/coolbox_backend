@@ -27,6 +27,11 @@ PERMISOS = [
         "Crear, programar y desactivar promociones (2x1, % de descuento, precio especial, cupones)",
     ),
     ("pedidos.gestionar", "Ver los pedidos online de la tienda web y entregarlos en la sede"),
+    ("clientes.gestionar", "Consultar y mantener el maestro de clientes (caja, tienda online e integración)"),
+    (
+        "integracion.gestionar",
+        "Intercambiar clientes con el grupo pareado por API: importar, revisar la tabla stage y la traza",
+    ),
     (
         "caja.autorizar",
         "Autorizar con PIN, en la caja del cajero, acciones restringidas (anulaciones, descuentos, retiros, "
@@ -69,6 +74,8 @@ ROLES = [
             "caja.autorizar",
             "promociones.gestionar",
             "pedidos.gestionar",
+            "clientes.gestionar",
+            "integracion.gestionar",
         ],
     },
     {
@@ -98,6 +105,7 @@ ROLES = [
             "caja.supervisar",
             "caja.autorizar",
             "pedidos.gestionar",
+            "clientes.gestionar",
         ],
     },
 ]

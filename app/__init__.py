@@ -113,6 +113,8 @@ def create_app(config_object="config.Config"):
     from .blueprints.promociones import bp as promociones_bp
     from .blueprints.pedidos_online import bp as pedidos_online_bp
     from .blueprints.devoluciones import bp as devoluciones_bp
+    from .blueprints.maestro_clientes import bp as maestro_clientes_bp
+    from .blueprints.integracion import bp as integracion_bp
 
     for blueprint in (
         auth_bp,
@@ -127,6 +129,8 @@ def create_app(config_object="config.Config"):
         promociones_bp,
         pedidos_online_bp,
         devoluciones_bp,
+        maestro_clientes_bp,
+        integracion_bp,
     ):
         app.register_blueprint(blueprint, url_prefix="/api")
 
@@ -147,6 +151,13 @@ def create_app(config_object="config.Config"):
         except Exception as exc:  # no bloquear el arranque si la BD no está lista
             db.session.rollback()
             app.logger.warning("No fue posible ejecutar seed automático: %s", exc)
+        try:
+            from .services.schema import instalar_procedimientos
+
+            if instalar_procedimientos():
+                app.logger.info("Procedimientos almacenados instalados (db/procedimientos.sql).")
+        except Exception as exc:
+            app.logger.error("No se pudieron instalar los procedimientos almacenados: %s", exc)
 
     @app.get("/")
     def root():
@@ -159,10 +170,10 @@ def create_app(config_object="config.Config"):
     @app.get("/health/db")
     def health_db():
         """Verifica la conexión con la base de datos (útil para diagnosticar Render/Supabase)."""
-        from sqlalchemy import text
+        from sqlalchemy import literal, select
 
         try:
-            db.session.execute(text("SELECT 1"))
+            db.session.execute(select(literal(1)))
             return {"status": "ok", "database": "conectada"}
         except Exception as exc:  # pragma: no cover
             app.logger.error("Fallo de conexión a BD: %s", exc)

@@ -33,7 +33,10 @@ def catalogo():
 @bp.get("/autorizaciones/supervisores")
 @jwt_required()
 def supervisores():
-    require_permiso("caja.operar")
+    try:
+        require_permiso("caja.operar")
+    except ApiError:
+        require_permiso("pedidos.gestionar")  # devoluciones de pedidos online
     yo = _usuario_actual()
     candidatos = Usuario.query.filter_by(estado="activo").order_by(Usuario.nombres).all()
     lista = [
@@ -58,11 +61,20 @@ def supervisores():
 @jwt_required()
 @limiter.limit(lambda: current_app.config["LIMITE_LOGIN"])
 def solicitar():
-    require_permiso("caja.operar")
-    usuario = _usuario_actual()
     data = request.get_json(silent=True) or {}
+    accion = str(data.get("accion") or "").upper()
+    try:
+        require_permiso("caja.operar")
+    except ApiError:
+        # Devolución de un pedido online: la atiende el personal de pedidos, sin caja.
+        if accion != "DEVOLUCION":
+            raise
+        require_permiso("pedidos.gestionar")
+    usuario = _usuario_actual()
     caja = caja_abierta_de(usuario)
-    if not caja and data.get("accion") not in ("REIMPRESION",):
+    # Reimpresión y devolución online no mueven efectivo de la gaveta: no exigen caja abierta
+    # (la devolución en caja sí la exige en su propio endpoint).
+    if not caja and accion not in ("REIMPRESION", "DEVOLUCION"):
         raise ApiError("caja_cerrada", "Debe tener su caja abierta para solicitar autorizaciones.", 409)
     registro, token = svc.solicitar(usuario, caja, data)
     return (
