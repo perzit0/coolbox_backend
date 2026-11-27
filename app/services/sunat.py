@@ -78,6 +78,7 @@ def _login():
 
 def _tipo_doc_cliente(doc):
     """Catálogo SUNAT 06: 6 RUC, 1 DNI, 4 carnet de extranjería."""
+    doc = doc or ""
     return "6" if len(doc) == 11 else ("1" if len(doc) == 8 else "4")
 
 
@@ -113,9 +114,22 @@ def _detalle(producto, producto_id, cantidad, precio_con_igv):
     }
 
 
+MONTO_BOLETA_SIN_DOCUMENTO = Decimal("700")  # SUNAT: boletas hasta S/ 700 pueden no identificar al cliente
+
+
 def _cliente(venta):
-    doc = venta.cliente_documento
-    return {"tipo_documento": _tipo_doc_cliente(doc), "numero_documento": doc, "razon_social": venta.cliente_nombre}
+    doc = (venta.cliente_documento or "").strip()
+    if doc:
+        return {"tipo_documento": _tipo_doc_cliente(doc), "numero_documento": doc, "razon_social": venta.cliente_nombre}
+    # Ventas antiguas registradas como "Público general" (antes de pedir el documento)
+    if venta.tipo_comprobante != "factura" and Decimal(str(venta.total)) <= MONTO_BOLETA_SIN_DOCUMENTO:
+        return {"tipo_documento": "0", "numero_documento": "00000000", "razon_social": "CLIENTES VARIOS"}
+    raise ApiError(
+        "documento_requerido",
+        "Esta venta no tiene DNI ni RUC del cliente y supera S/ 700: la SUNAT exige identificarlo, "
+        "así que no se puede emitir su comprobante. Queda como comprobante interno.",
+        400,
+    )
 
 
 def _cuerpo_comun(serie, fecha):
