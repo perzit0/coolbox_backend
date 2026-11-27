@@ -161,6 +161,14 @@ def create_app(config_object="config.Config"):
                 app.logger.info("Procedimientos almacenados instalados (db/procedimientos.sql).")
         except Exception as exc:
             app.logger.error("No se pudieron instalar los procedimientos almacenados: %s", exc)
+        try:
+            from .services.integracion import migrar_socio_inicial
+
+            if migrar_socio_inicial():
+                app.logger.info("Integraciones: primera empresa creada desde las variables de entorno.")
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.error("No se pudo crear la primera empresa de integración: %s", exc)
 
     @app.get("/")
     def root():

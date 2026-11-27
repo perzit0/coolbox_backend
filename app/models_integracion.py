@@ -8,6 +8,8 @@
 - IntegracionLote: cada carga de clientes recibida del otro grupo.
 - ClienteStage: tabla de desembarco (stage). Guarda tal cual cada registro recibido y,
   al procesarlo, el resultado: insertado, actualizado, sin cambios, duplicado o rechazado.
+- IntegracionSocio: empresas con las que se comparten clientes. Se agregan desde el panel
+  (sin tocar código): URL y token de su API (cifrado) y la huella de la clave que les damos.
 - ApiTraza: traza de cada llamada a la API de clientes, entrante o saliente
   (hora, quién, resultado, intento, duración y cantidad de registros).
 """
@@ -113,3 +115,21 @@ def fila_a_dict(fila):
     for clave, valor in dict(fila).items():
         datos[clave] = iso(valor) if hasattr(valor, "isoformat") and hasattr(valor, "hour") else valor
     return datos
+
+
+class IntegracionSocio(db.Model):
+    __tablename__ = "integracion_socio"
+    id = db.Column(db.Integer, primary_key=True)
+    nombre = db.Column(db.String(80), nullable=False, unique=True)  # nombre comercial de la empresa
+    url = db.Column(db.String(300), nullable=False)  # API de clientes de la empresa (vuelta)
+    header = db.Column(db.String(60), nullable=False, default="X-API-Key")
+    esquema = db.Column(db.String(20))  # p. ej. "Bearer" si su API lo pide
+    clave_cifrada = db.Column(db.Text)  # token de su API, cifrado con Fernet
+    clave_sufijo = db.Column(db.String(4))  # últimos 4 caracteres, solo para mostrar
+    entrada_hash = db.Column(db.String(64), unique=True)  # SHA-256 de la clave que les damos (ida)
+    entrada_sufijo = db.Column(db.String(4))
+    mapeo = db.Column(JSON_DOC)  # nombres de sus campos si no son los comunes
+    activo = db.Column(db.Boolean, nullable=False, default=True)
+    usuario_id = db.Column(db.Integer, ForeignKey("usuario.id", ondelete="SET NULL"))
+    fecha_registro = db.Column(db.DateTime(timezone=True), nullable=False, default=ahora)
+    fecha_actualizacion = db.Column(db.DateTime(timezone=True), nullable=False, default=ahora)

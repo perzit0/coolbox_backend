@@ -46,6 +46,12 @@ PERMITIDOS = frozenset(
         "sp_stage_listar",
         "sp_traza_registrar",
         "sp_traza_listar",
+        "sp_socios_listar",
+        "sp_socio_config",
+        "sp_socio_guardar",
+        "sp_socio_entrada",
+        "sp_socio_por_clave",
+        "sp_socio_migrar",
         "sp_pedido_devolver",
     }
 )

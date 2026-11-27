@@ -55,7 +55,13 @@ def listar():
     origen = request.args.get("origen") if request.args.get("origen") in ORIGENES else None
     activo = {"1": True, "true": True, "0": False, "false": False}.get((request.args.get("activo") or "").lower())
     filas = sp.filas(
-        "sp_clientes_listar", request.args.get("q") or None, origen, activo, por_pagina, (pagina - 1) * por_pagina
+        "sp_clientes_listar",
+        request.args.get("q") or None,
+        origen,
+        activo,
+        por_pagina,
+        (pagina - 1) * por_pagina,
+        (request.args.get("empresa") or "").strip()[:80] or None,
     )
     total = filas[0]["total"] if filas else 0
     return jsonify(

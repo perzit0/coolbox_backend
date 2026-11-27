@@ -330,7 +330,8 @@ $$;
 
 -- Listado paginado con búsqueda por documento, nombre, razón social o correo.
 CREATE FUNCTION sp_clientes_listar(
-    p_buscar text, p_origen text, p_activo boolean, p_limite integer, p_offset integer
+    p_buscar text, p_origen text, p_activo boolean, p_limite integer, p_offset integer,
+    p_empresa text DEFAULT NULL
 )
 RETURNS TABLE (cliente jsonb, total bigint)
 LANGUAGE sql STABLE
@@ -338,6 +339,7 @@ AS $$
     SELECT sp_cliente_json(m), count(*) OVER ()
     FROM maestro_cliente m
     WHERE (p_origen IS NULL OR m.origen = p_origen)
+      AND (p_empresa IS NULL OR (m.origen = 'integracion' AND m.origen_detalle = p_empresa))
       AND (p_activo IS NULL OR m.activo = p_activo)
       AND (
           coalesce(btrim(p_buscar), '') = ''
@@ -644,11 +646,12 @@ AS $$
     )
 $$;
 
-CREATE FUNCTION sp_lotes_listar(p_limite integer)
+CREATE FUNCTION sp_lotes_listar(p_limite integer, p_origen text DEFAULT NULL)
 RETURNS TABLE (lote jsonb)
 LANGUAGE sql STABLE
 AS $$
     SELECT sp_lote_json(l) FROM integracion_lote l
+    WHERE p_origen IS NULL OR l.origen = p_origen
     ORDER BY l.id DESC
     LIMIT least(greatest(coalesce(p_limite, 30), 1), 200)
 $$;
@@ -698,14 +701,168 @@ BEGIN
 END
 $$;
 
-CREATE FUNCTION sp_traza_listar(p_direccion text, p_limite integer)
+CREATE FUNCTION sp_traza_listar(p_direccion text, p_limite integer, p_sistema text DEFAULT NULL)
 RETURNS TABLE (traza jsonb)
 LANGUAGE sql STABLE
 AS $$
     SELECT to_jsonb(t) FROM api_traza t
-    WHERE p_direccion IS NULL OR t.direccion = p_direccion
+    WHERE (p_direccion IS NULL OR t.direccion = p_direccion)
+      AND (p_sistema IS NULL OR t.sistema = p_sistema)
     ORDER BY t.id DESC
     LIMIT least(greatest(coalesce(p_limite, 100), 1), 500)
+$$;
+
+
+-- Empresas con las que se comparten clientes. Se agregan desde el panel, sin tocar código.
+-- El token de su API llega ya cifrado desde el backend; de nuestra clave solo se guarda la
+-- huella SHA-256. Lotes, traza y clientes se relacionan con la empresa por su nombre.
+CREATE FUNCTION sp_socio_json(s integracion_socio)
+RETURNS jsonb
+LANGUAGE sql STABLE
+AS $$
+    SELECT jsonb_build_object(
+        'id', s.id, 'nombre', s.nombre, 'url', s.url, 'header', s.header, 'esquema', s.esquema,
+        'mapeo', s.mapeo, 'activo', s.activo,
+        'tiene_clave', s.clave_cifrada IS NOT NULL, 'clave_sufijo', s.clave_sufijo,
+        'tiene_clave_entrada', s.entrada_hash IS NOT NULL, 'entrada_sufijo', s.entrada_sufijo,
+        'fecha_registro', s.fecha_registro, 'fecha_actualizacion', s.fecha_actualizacion,
+        'clientes', (SELECT count(*) FROM maestro_cliente m
+                     WHERE m.origen = 'integracion' AND m.origen_detalle = s.nombre),
+        'ultimo_lote', (SELECT sp_lote_json(l) FROM integracion_lote l
+                        WHERE l.origen = s.nombre ORDER BY l.id DESC LIMIT 1)
+    )
+$$;
+
+CREATE FUNCTION sp_socios_listar(p_solo_activos boolean)
+RETURNS TABLE (socio jsonb)
+LANGUAGE sql STABLE
+AS $$
+    SELECT sp_socio_json(s) FROM integracion_socio s
+    WHERE NOT coalesce(p_solo_activos, false) OR s.activo
+    ORDER BY s.activo DESC, s.nombre
+$$;
+
+-- Configuración completa (con el token cifrado): solo la usa el backend para llamar a su API.
+CREATE FUNCTION sp_socio_config(p_id integer)
+RETURNS TABLE (socio jsonb)
+LANGUAGE sql STABLE
+AS $$
+    SELECT to_jsonb(s) FROM integracion_socio s WHERE s.id = p_id
+$$;
+
+-- Alta (p_id NULL) o edición. Solo se cambian los campos presentes en p_datos.
+-- El nombre se fija al crear: lotes, traza y clientes quedan asociados a él.
+CREATE FUNCTION sp_socio_guardar(p_id integer, p_datos jsonb, p_usuario_id integer)
+RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_id integer := p_id;
+    v_nombre text := sp_texto(p_datos->>'nombre', 80);
+    v_url text := btrim(coalesce(p_datos->>'url', ''));
+    v_header text := coalesce(sp_texto(p_datos->>'header', 60), 'X-API-Key');
+    v_esquema text := sp_texto(p_datos->>'esquema', 20);
+BEGIN
+    IF (p_id IS NULL OR p_datos ? 'url') AND v_url !~* '^https?://[^\s/$.?#][^\s]*$' THEN
+        PERFORM sp_error('url_invalida', 'Ingrese la URL completa de su API de clientes (https://...).', 400);
+    END IF;
+    IF length(v_url) > 300 THEN
+        PERFORM sp_error('url_invalida', 'La URL no puede superar los 300 caracteres.', 400);
+    END IF;
+    IF v_header !~ '^[A-Za-z0-9-]{1,60}$' THEN
+        PERFORM sp_error('cabecera_invalida', 'La cabecera solo admite letras, números y guiones (p. ej. X-API-Key).', 400);
+    END IF;
+    IF v_esquema IS NOT NULL AND v_esquema !~ '^[A-Za-z]{1,20}$' THEN
+        PERFORM sp_error('esquema_invalido', 'El esquema solo admite letras (p. ej. Bearer).', 400);
+    END IF;
+
+    IF p_id IS NULL THEN
+        IF v_nombre IS NULL OR length(v_nombre) < 3 THEN
+            PERFORM sp_error('nombre_invalido', 'Ingrese el nombre de la empresa (mínimo 3 caracteres).', 400);
+        END IF;
+        IF EXISTS (SELECT 1 FROM integracion_socio WHERE lower(nombre) = lower(v_nombre)) THEN
+            PERFORM sp_error('empresa_duplicada', 'Ya existe una empresa con el nombre ' || v_nombre || '.', 409);
+        END IF;
+        INSERT INTO integracion_socio (
+            nombre, url, header, esquema, clave_cifrada, clave_sufijo, mapeo, activo,
+            usuario_id, fecha_registro, fecha_actualizacion
+        )
+        VALUES (
+            v_nombre, v_url, v_header, v_esquema, p_datos->>'clave_cifrada', p_datos->>'clave_sufijo',
+            p_datos->'mapeo', true, p_usuario_id, now(), now()
+        )
+        RETURNING id INTO v_id;
+        RETURN v_id;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM integracion_socio WHERE id = p_id) THEN
+        PERFORM sp_error('empresa_no_encontrada', 'La empresa no existe.', 404);
+    END IF;
+    UPDATE integracion_socio SET
+        url = CASE WHEN p_datos ? 'url' THEN v_url ELSE url END,
+        header = CASE WHEN p_datos ? 'header' THEN v_header ELSE header END,
+        esquema = CASE WHEN p_datos ? 'esquema' THEN v_esquema ELSE esquema END,
+        clave_cifrada = CASE WHEN p_datos ? 'clave_cifrada' THEN p_datos->>'clave_cifrada' ELSE clave_cifrada END,
+        clave_sufijo = CASE WHEN p_datos ? 'clave_cifrada' THEN p_datos->>'clave_sufijo' ELSE clave_sufijo END,
+        mapeo = CASE WHEN p_datos ? 'mapeo' THEN p_datos->'mapeo' ELSE mapeo END,
+        activo = CASE WHEN p_datos ? 'activo' THEN (p_datos->>'activo')::boolean ELSE activo END,
+        fecha_actualizacion = now()
+    WHERE id = p_id;
+    RETURN v_id;
+END
+$$;
+
+-- Nuestra clave para la empresa (ida): solo se guarda su huella.
+CREATE FUNCTION sp_socio_entrada(p_id integer, p_hash text, p_sufijo text)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    UPDATE integracion_socio
+    SET entrada_hash = p_hash, entrada_sufijo = left(p_sufijo, 4), fecha_actualizacion = now()
+    WHERE id = p_id;
+    IF NOT FOUND THEN
+        PERFORM sp_error('empresa_no_encontrada', 'La empresa no existe.', 404);
+    END IF;
+END
+$$;
+
+-- ¿De qué empresa (activa) es esta clave? Recibe la huella, nunca la clave.
+CREATE FUNCTION sp_socio_por_clave(p_hash text)
+RETURNS text
+LANGUAGE sql STABLE
+AS $$
+    SELECT nombre FROM integracion_socio WHERE entrada_hash = p_hash AND activo
+$$;
+
+-- Primera empresa a partir de las variables de entorno anteriores (una sola vez). Su
+-- historial, registrado con otros nombres (p_datos->'alias'), pasa a su nombre comercial.
+CREATE FUNCTION sp_socio_migrar(p_datos jsonb)
+RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_id integer;
+    v_nombre text;
+    v_alias text[] := ARRAY(SELECT jsonb_array_elements_text(coalesce(p_datos->'alias', '[]'::jsonb)));
+BEGIN
+    IF EXISTS (SELECT 1 FROM integracion_socio) THEN
+        RETURN NULL;
+    END IF;
+    v_id := sp_socio_guardar(NULL, p_datos, NULL);
+    SELECT nombre INTO v_nombre FROM integracion_socio WHERE id = v_id;
+    IF p_datos->>'entrada_hash' IS NOT NULL THEN
+        PERFORM sp_socio_entrada(v_id, p_datos->>'entrada_hash', p_datos->>'entrada_sufijo');
+    END IF;
+    v_alias := array_remove(v_alias, v_nombre);
+    IF cardinality(v_alias) > 0 THEN
+        UPDATE integracion_lote SET origen = v_nombre WHERE origen = ANY (v_alias);
+        UPDATE api_traza SET sistema = v_nombre WHERE sistema = ANY (v_alias);
+        UPDATE maestro_cliente SET origen_detalle = v_nombre
+        WHERE origen = 'integracion' AND origen_detalle = ANY (v_alias);
+    END IF;
+    RETURN v_id;
+END
 $$;
 
 

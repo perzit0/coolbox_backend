@@ -1,11 +1,15 @@
-"""Integración de clientes con el grupo pareado (API de ida y vuelta).
+"""Integración de clientes con otras empresas (API de ida y vuelta), una o varias.
 
-Ida   : nosotros exponemos nuestro maestro de clientes (blueprint integracion).
-Vuelta: leemos la API de clientes del otro grupo y la cargamos aquí.
+Ida   : nosotros exponemos nuestro maestro de clientes (blueprint integracion); cada
+        empresa entra con la clave que le generamos (solo guardamos su huella).
+Vuelta: leemos la API de clientes de cada empresa y la cargamos aquí.
+
+Las empresas se registran desde el panel (tabla integracion_socio): nombre, URL de su API,
+cabecera y token (cifrado). Agregar una empresa nueva no requiere cambiar código.
 
 Flujo de la carga (requerimiento del profesor):
   1. Se abre un lote (sp_lote_crear).
-  2. Se lee la API del otro grupo, página por página, con reintentos si no responde.
+  2. Se lee la API de la empresa, página por página, con reintentos si no responde.
      Cada intento queda en la traza del API (sp_traza_registrar).
   3. Todo lo recibido se guarda tal cual en la tabla de desembarco (sp_stage_cargar).
   4. sp_stage_procesar depura y pasa al maestro solo lo válido y no repetido, con la
@@ -13,13 +17,16 @@ Flujo de la carga (requerimiento del profesor):
 
 El otro grupo puede tener otra estructura (otros nombres de columna, códigos SUNAT en
 vez de texto, nombres y apellidos juntos o separados): se reconocen los nombres más
-comunes y, si hace falta, INTEGRACION_SOCIO_MAPEO indica el campo exacto.
-No hay URLs, claves ni nombres de sistema en el código: todo viene del entorno.
+comunes y, si hace falta, el mapeo de la empresa indica el campo exacto.
+No hay URLs, claves ni nombres de empresas en el código.
 """
 
 import hmac
+import ipaddress
 import json
 import logging
+import secrets
+import socket
 import time
 from hashlib import sha256
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -29,6 +36,7 @@ from flask import current_app
 
 from ..errors import ApiError
 from ..extensions import db
+from . import cifrado
 from . import procedimientos as sp
 
 log = logging.getLogger("coolbox.integracion")
@@ -106,10 +114,19 @@ def claves_entrantes():
     return claves
 
 
+def hay_claves_entrantes():
+    return bool(claves_entrantes()) or any(s["tiene_clave_entrada"] for s in socios(solo_activos=True))
+
+
 def sistema_por_clave(clave):
-    """Nombre del sistema dueño de la clave, comparando en tiempo constante."""
-    if not clave:
+    """Nombre de la empresa dueña de la clave: primero las registradas en el panel (por
+    huella), luego las de INTEGRACION_API_KEYS (comparando en tiempo constante)."""
+    if not clave or len(clave) > 200:
         return None
+    if sp.disponibles():
+        nombre = sp.valor("sp_socio_por_clave", cifrado.huella(clave))
+        if nombre:
+            return nombre
     recibida = sha256(clave.encode()).digest()
     encontrado = None
     for nombre, valida in claves_entrantes().items():
@@ -181,16 +198,16 @@ def _plano(registro, prefijo=""):
     return plano
 
 
-def _mapeo_socio():
-    texto = _cfg("INTEGRACION_SOCIO_MAPEO") or ""
-    if not texto:
+def _mapeo(mapeo):
+    """Mapeo de campos de la empresa ({"nro_documento": "dni", ...}), solo con campos conocidos."""
+    if isinstance(mapeo, str):
+        try:
+            mapeo = json.loads(mapeo) if mapeo.strip() else {}
+        except ValueError:
+            return {}
+    if not isinstance(mapeo, dict):
         return {}
-    try:
-        mapeo = json.loads(texto)
-        return {k: str(v).strip().lower() for k, v in mapeo.items() if k in ALIAS}
-    except (ValueError, AttributeError):
-        log.warning("INTEGRACION_SOCIO_MAPEO no es un JSON válido; se usan los nombres comunes.")
-        return {}
+    return {k: str(v).strip().lower() for k, v in mapeo.items() if k in ALIAS and v}
 
 
 def _texto(valor):
@@ -208,7 +225,7 @@ def normalizar(registro, mapeo=None):
     """
     original = registro if isinstance(registro, dict) else {"valor": registro}
     plano = _plano(original)
-    mapeo = mapeo if mapeo is not None else _mapeo_socio()
+    mapeo = mapeo or {}
 
     def campo(nombre):
         if nombre in mapeo:
@@ -287,12 +304,111 @@ def _siguiente(cuerpo, url_actual):
 # ------------------------------------------------------------------ lectura de la API del socio
 
 
-def socio():
-    return {
-        "nombre": _cfg("INTEGRACION_SOCIO_NOMBRE") or "Grupo pareado",
-        "url": _cfg("INTEGRACION_SOCIO_URL") or "",
-        "tiene_clave": bool(_cfg("INTEGRACION_SOCIO_API_KEY") or _cfg("INTEGRACION_SOCIO_PASSWORD")),
+def socios(solo_activos=False):
+    return sp.columna("sp_socios_listar", "socio", solo_activos) if sp.disponibles() else []
+
+
+def obtener_socio(socio_id):
+    """Configuración de la empresa con su token ya descifrado (solo uso interno)."""
+    sp.exigir()
+    fila = sp.columna("sp_socio_config", "socio", socio_id)
+    if not fila:
+        raise ApiError("empresa_no_encontrada", "La empresa no existe.", 404)
+    datos = fila[0]
+    datos["clave"] = cifrado.descifrar(datos.get("clave_cifrada"))
+    datos["clave_ilegible"] = bool(datos.get("clave_cifrada")) and not datos["clave"]
+    # Respaldo: la primera empresa vino de las variables de entorno; si la llave de cifrado
+    # cambió, se sigue usando el token de Render mientras se vuelve a ingresar en el panel.
+    if datos["clave_ilegible"] and datos["nombre"] == _cfg("INTEGRACION_SOCIO_NOMBRE"):
+        datos["clave"] = _cfg("INTEGRACION_SOCIO_API_KEY")
+    return datos
+
+
+def validar_url(url):
+    """La URL debe ser http(s) y, en producción, no apuntar a la red interna del servidor."""
+    partes = urlparse(url or "")
+    if partes.scheme not in ("http", "https") or not partes.hostname:
+        raise ApiError("url_invalida", "Ingrese la URL completa de su API de clientes (https://...).", 400)
+    if _cfg("INTEGRACION_PERMITIR_LOCAL"):
+        return
+    try:
+        direcciones = {info[4][0] for info in socket.getaddrinfo(partes.hostname, partes.port or 443)}
+    except socket.gaierror:
+        raise ApiError("url_invalida", "No se encontró el servidor de esa URL.", 400) from None
+    for direccion in direcciones:
+        ip = ipaddress.ip_address(direccion.split("%")[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            raise ApiError("url_no_permitida", "La URL apunta a una dirección interna y no está permitida.", 400)
+
+
+def guardar_socio(socio_id, data, usuario_id):
+    """Alta o edición desde el panel. Devuelve (empresa, clave_entrante_nueva_o_None)."""
+    sp.exigir()
+    datos = {}
+    for campo in ("nombre", "url", "header", "esquema", "activo"):
+        if campo in data:
+            datos[campo] = data[campo]
+    if "url" in datos or socio_id is None:
+        datos["url"] = (datos.get("url") or "").strip()
+        validar_url(datos["url"])
+    if "mapeo" in data:
+        datos["mapeo"] = _mapeo(data.get("mapeo")) or None
+    clave = (data.get("clave") or "").strip()
+    if clave:
+        if len(clave) > 500:
+            raise ApiError("clave_invalida", "El token es demasiado largo.", 400)
+        datos["clave_cifrada"], datos["clave_sufijo"] = cifrado.cifrar(clave), clave[-4:]
+    elif data.get("quitar_clave"):
+        datos["clave_cifrada"], datos["clave_sufijo"] = None, None
+    if "activo" in datos:
+        datos["activo"] = bool(datos["activo"])
+    nuevo_id = sp.valor("sp_socio_guardar", socio_id, sp.json_param(datos), usuario_id)
+    clave_entrante = generar_clave_entrante(nuevo_id) if socio_id is None else None
+    db.session.commit()
+    return socio_publico(nuevo_id), clave_entrante
+
+
+def socio_publico(socio_id):
+    """Datos de la empresa para el panel (sin token ni huella)."""
+    encontrado = next((s for s in socios() if s["id"] == socio_id), None)
+    if not encontrado:
+        raise ApiError("empresa_no_encontrada", "La empresa no existe.", 404)
+    return encontrado
+
+
+def generar_clave_entrante(socio_id):
+    """Nuestra clave para que la empresa lea nuestra API. Se muestra una sola vez."""
+    clave = secrets.token_urlsafe(32)
+    sp.valor("sp_socio_entrada", socio_id, cifrado.huella(clave), clave[-4:])
+    return clave
+
+
+def migrar_socio_inicial():
+    """Si aún no hay empresas, crea la primera con las variables INTEGRACION_SOCIO_* de antes."""
+    url = _cfg("INTEGRACION_SOCIO_URL")
+    if not url or not sp.disponibles():
+        return None
+    nombre = _cfg("INTEGRACION_SOCIO_NOMBRE") or "Empresa pareada"
+    clave = _cfg("INTEGRACION_SOCIO_API_KEY")
+    datos = {
+        "nombre": nombre,
+        "url": url,
+        "header": _cfg("INTEGRACION_SOCIO_HEADER") or "X-API-Key",
+        "esquema": _cfg("INTEGRACION_SOCIO_ESQUEMA"),
+        "mapeo": _mapeo(_cfg("INTEGRACION_SOCIO_MAPEO")) or None,
+        "alias": [],
     }
+    if clave:
+        datos["clave_cifrada"], datos["clave_sufijo"] = cifrado.cifrar(clave), clave[-4:]
+    entrantes = claves_entrantes()
+    if len(entrantes) == 1:
+        # La única clave que ya teníamos (p. ej. "Grupo 5") es la de esta empresa
+        alias, valor = next(iter(entrantes.items()))
+        datos["alias"] = [alias]
+        datos["entrada_hash"], datos["entrada_sufijo"] = cifrado.huella(valor), valor[-4:]
+    nuevo = sp.valor("sp_socio_migrar", sp.json_param(datos))
+    db.session.commit()
+    return nuevo
 
 
 def _mismo_servidor(url_a, url_b):
@@ -300,50 +416,12 @@ def _mismo_servidor(url_a, url_b):
     return (a.scheme, a.netloc) == (b.scheme, b.netloc)
 
 
-def _cabeceras():
+def _cabeceras(socio):
     cabeceras = {"Accept": "application/json", "User-Agent": _cfg("INTEGRACION_SISTEMA") or "coolbox-backend"}
-    clave = _cfg("INTEGRACION_SOCIO_API_KEY")
-    if _cfg("INTEGRACION_SOCIO_LOGIN_URL"):
-        clave = _login_socio()
-    if clave:
-        esquema = _cfg("INTEGRACION_SOCIO_ESQUEMA") or ""
-        cabeceras[_cfg("INTEGRACION_SOCIO_HEADER") or "X-API-Key"] = f"{esquema} {clave}".strip()
+    if socio.get("clave"):
+        valor = f"{socio.get('esquema') or ''} {socio['clave']}".strip()
+        cabeceras[socio.get("header") or "X-API-Key"] = valor
     return cabeceras
-
-
-def _login_socio():
-    """Si la API del otro grupo pide iniciar sesión, se obtiene el token antes de leer."""
-    url = _cfg("INTEGRACION_SOCIO_LOGIN_URL")
-    cuerpo = {
-        _cfg("INTEGRACION_SOCIO_CAMPO_USUARIO") or "email": _cfg("INTEGRACION_SOCIO_USUARIO"),
-        _cfg("INTEGRACION_SOCIO_CAMPO_PASSWORD") or "password": _cfg("INTEGRACION_SOCIO_PASSWORD"),
-    }
-    inicio = time.monotonic()
-    try:
-        resp = requests.post(
-            url, json=cuerpo, headers={"Accept": "application/json"}, timeout=_cfg("INTEGRACION_TIMEOUT", 20)
-        )
-    except requests.RequestException as exc:
-        trazar("salida", socio()["nombre"], "POST", url, None, False, mensaje=f"Login sin respuesta: {exc}")
-        raise IntegracionError("La API del otro grupo no respondió al iniciar sesión.") from None
-    ms = int((time.monotonic() - inicio) * 1000)
-    datos = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-    token = None
-    for fuente in (datos, datos.get("data") if isinstance(datos.get("data"), dict) else {}):
-        token = token or fuente.get("access_token") or fuente.get("token") or fuente.get("accessToken")
-    trazar(
-        "salida",
-        socio()["nombre"],
-        "POST",
-        url,
-        resp.status_code,
-        bool(token),
-        duracion_ms=ms,
-        mensaje="Login correcto" if token else "Login sin token",
-    )
-    if not token:
-        raise IntegracionError(f"El inicio de sesión en la API del otro grupo falló (HTTP {resp.status_code}).")
-    return token
 
 
 def _texto_error(resp):
@@ -357,11 +435,10 @@ def _texto_error(resp):
     return " ".join(resp.text.split())[:150]
 
 
-def _get_con_reintentos(url, cabeceras, lote_id):
+def _get_con_reintentos(url, cabeceras, lote_id, nombre):
     """GET con reintentos y espera creciente. Devuelve (json, intentos usados)."""
     reintentos = max(int(_cfg("INTEGRACION_REINTENTOS", 3)), 1)
     espera = float(_cfg("INTEGRACION_ESPERA_SEGUNDOS", 2))
-    nombre = socio()["nombre"]
     ultimo = "Sin respuesta"
     for intento in range(1, reintentos + 1):
         inicio = time.monotonic()
@@ -374,7 +451,7 @@ def _get_con_reintentos(url, cabeceras, lote_id):
                         "salida", nombre, "GET", url, 200, False, intento, ms,
                         mensaje="Respuesta demasiado grande", lote_id=lote_id,
                     )
-                    raise IntegracionError("La respuesta de la API del otro grupo supera el tamaño permitido.", intento)
+                    raise IntegracionError("La respuesta de la API de la empresa supera el tamaño permitido.", intento)
                 try:
                     cuerpo = resp.json()
                 except ValueError:
@@ -390,7 +467,7 @@ def _get_con_reintentos(url, cabeceras, lote_id):
                         mensaje="Respuesta no es JSON",
                         lote_id=lote_id,
                     )
-                    raise IntegracionError("La API del otro grupo no respondió en formato JSON.", intento) from None
+                    raise IntegracionError("La API de la empresa no respondió en formato JSON.", intento) from None
                 cantidad = len(extraer_registros(cuerpo))
                 # Huella SHA-256 de lo recibido: permite demostrar después qué datos llegaron en esa llamada.
                 mensaje = f"Correcto · SHA-256 {sha256(resp.content).hexdigest()[:16]}"
@@ -400,10 +477,10 @@ def _get_con_reintentos(url, cabeceras, lote_id):
             trazar("salida", nombre, "GET", url, resp.status_code, False, intento, ms, mensaje=ultimo, lote_id=lote_id)
             if resp.status_code in (401, 403):
                 raise IntegracionError(
-                    f"La API del otro grupo rechazó nuestra clave (HTTP {resp.status_code}).", intento
+                    f"La API de la empresa rechazó nuestra clave (HTTP {resp.status_code}).", intento
                 )
             if resp.status_code not in REINTENTAR:
-                raise IntegracionError(f"La API del otro grupo respondió con error ({ultimo}).", intento)
+                raise IntegracionError(f"La API de la empresa respondió con error ({ultimo}).", intento)
         except requests.RequestException as exc:
             ms = int((time.monotonic() - inicio) * 1000)
             ultimo = f"Sin respuesta: {type(exc).__name__}"
@@ -411,27 +488,32 @@ def _get_con_reintentos(url, cabeceras, lote_id):
         if intento < reintentos:
             time.sleep(espera * (2 ** (intento - 1)))  # 2 s, 4 s, 8 s...
     raise IntegracionError(
-        f"La API del otro grupo no respondió después de {reintentos} intentos ({ultimo}).", reintentos
+        f"La API de la empresa no respondió después de {reintentos} intentos ({ultimo}).", reintentos
     )
 
 
-def probar_socio():
-    """Comprueba si la API del otro grupo está activa (una sola llamada, sin cargar datos)."""
-    datos = socio()
-    url = datos["url"]
-    if not url or not url.startswith(("http://", "https://")):
-        raise IntegracionError("Falta INTEGRACION_SOCIO_URL: la URL de la API de clientes del otro grupo.")
+def _url_socio(socio):
+    url = socio.get("url") or ""
+    if not url.startswith(("http://", "https://")):
+        raise IntegracionError(f"Falta la URL de la API de clientes de {socio['nombre']}.")
+    validar_url(url)
+    return url
+
+
+def probar_socio(socio):
+    """Comprueba si la API de la empresa está activa (una sola llamada, sin cargar datos)."""
+    url = _url_socio(socio)
     inicio = time.monotonic()
     try:
-        resp = requests.get(url, headers=_cabeceras(), timeout=_cfg("INTEGRACION_TIMEOUT", 20))
+        resp = requests.get(url, headers=_cabeceras(socio), timeout=_cfg("INTEGRACION_TIMEOUT", 20))
     except requests.RequestException as exc:
         ms = int((time.monotonic() - inicio) * 1000)
         mensaje = f"Prueba de conexión: sin respuesta ({type(exc).__name__})"
-        trazar("salida", datos["nombre"], "GET", url, None, False, 1, ms, mensaje=mensaje)
+        trazar("salida", socio["nombre"], "GET", url, None, False, 1, ms, mensaje=mensaje)
         return {"activa": False, "http": None, "ms": ms, "registros": None, "mensaje": mensaje}
     ms = int((time.monotonic() - inicio) * 1000)
     registros = None
-    if resp.status_code == 200:
+    if resp.status_code == 200 and len(resp.content) <= int(_cfg("INTEGRACION_MAX_MB", 5)) * 1024 * 1024:
         try:
             registros = len(extraer_registros(resp.json()))
         except ValueError:
@@ -440,22 +522,20 @@ def probar_socio():
     mensaje = (
         "Prueba de conexión: activa" if activa else f"Prueba de conexión: HTTP {resp.status_code} {_texto_error(resp)}"
     )
-    trazar("salida", datos["nombre"], "GET", url, resp.status_code, activa, 1, ms, registros, mensaje[:300])
+    trazar("salida", socio["nombre"], "GET", url, resp.status_code, activa, 1, ms, registros, mensaje[:300])
     return {"activa": activa, "http": resp.status_code, "ms": ms, "registros": registros, "mensaje": mensaje}
 
 
-def leer_socio(lote_id):
-    """Todas las páginas de clientes del otro grupo. Devuelve (registros, intentos)."""
-    url = _cfg("INTEGRACION_SOCIO_URL")
-    if not url or not url.startswith(("http://", "https://")):
-        raise IntegracionError("Falta INTEGRACION_SOCIO_URL: la URL de la API de clientes del otro grupo.")
-    cabeceras = _cabeceras()
+def leer_socio(lote_id, socio):
+    """Todas las páginas de clientes de la empresa. Devuelve (registros, intentos)."""
+    url = _url_socio(socio)
+    cabeceras = _cabeceras(socio)
     registros, intentos_total = [], 0
     maximo = int(_cfg("INTEGRACION_MAX_REGISTROS", 5000))
     visitadas = set()
     for _ in range(int(_cfg("INTEGRACION_MAX_PAGINAS", 50))):
         visitadas.add(url)
-        cuerpo, intentos = _get_con_reintentos(url, cabeceras, lote_id)
+        cuerpo, intentos = _get_con_reintentos(url, cabeceras, lote_id, socio["nombre"])
         intentos_total += intentos
         registros.extend(extraer_registros(cuerpo))
         if len(registros) >= maximo:
@@ -472,9 +552,9 @@ def leer_socio(lote_id):
 # ------------------------------------------------------------------ carga a stage y maestro
 
 
-def cargar(lote_id, registros):
+def cargar(lote_id, registros, mapeo=None):
     """Desembarco en la tabla stage (en bloques) y paso al maestro. Devuelve el resultado."""
-    mapeo = _mapeo_socio()
+    mapeo = _mapeo(mapeo)
     filas = [normalizar(r, mapeo) for r in registros]
     for i in range(0, len(filas), 500):
         sp.valor("sp_stage_cargar", lote_id, sp.json_param(filas[i : i + 500]))
@@ -484,14 +564,15 @@ def cargar(lote_id, registros):
     return resultado
 
 
-def importar_socio(usuario_id):
-    """Vuelta de la integración: trae los clientes del otro grupo. Devuelve el lote."""
+def importar_socio(usuario_id, socio):
+    """Vuelta de la integración: trae los clientes de la empresa. Devuelve el lote."""
     sp.exigir()
-    datos = socio()
-    lote_id = sp.valor("sp_lote_crear", datos["nombre"], "consulta", _sin_query(datos["url"]), usuario_id)
+    if not socio.get("activo", True):
+        raise ApiError("empresa_inactiva", f"{socio['nombre']} está desactivada.", 409)
+    lote_id = sp.valor("sp_lote_crear", socio["nombre"], "consulta", _sin_query(socio.get("url")), usuario_id)
     db.session.commit()
     try:
-        registros, intentos = leer_socio(lote_id)
+        registros, intentos = leer_socio(lote_id, socio)
     except IntegracionError as exc:
         sp.valor("sp_lote_cerrar", lote_id, "error", str(exc), exc.intentos)
         db.session.commit()
@@ -499,14 +580,14 @@ def importar_socio(usuario_id):
     sp.valor("sp_lote_intentos", lote_id, intentos)
     db.session.commit()
     if not registros:
-        sp.valor("sp_lote_cerrar", lote_id, "completado", "La API del otro grupo no devolvió clientes.", intentos)
+        sp.valor("sp_lote_cerrar", lote_id, "completado", "La API de la empresa no devolvió clientes.", intentos)
         db.session.commit()
         return obtener_lote(lote_id)
-    cargar(lote_id, registros)
+    cargar(lote_id, registros, socio.get("mapeo"))
     return obtener_lote(lote_id)
 
 
-def recibir(origen, modo, registros, usuario_id=None, url=None):
+def recibir(origen, modo, registros, usuario_id=None, url=None, mapeo=None):
     """Carga clientes que nos envían (recepción por nuestra API o archivo JSON)."""
     sp.exigir()
     if not isinstance(registros, list) or not registros:
@@ -516,7 +597,7 @@ def recibir(origen, modo, registros, usuario_id=None, url=None):
         raise ApiError("demasiados_registros", f"Se aceptan hasta {maximo} clientes por envío.", 413)
     lote_id = sp.valor("sp_lote_crear", origen, modo, url, usuario_id)
     db.session.commit()
-    cargar(lote_id, registros)
+    cargar(lote_id, registros, mapeo)
     return obtener_lote(lote_id)
 
 

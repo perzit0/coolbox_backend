@@ -281,3 +281,23 @@ Variables nuevas: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `COMPROBANTES_BUCKET`.
 - **Frontends**: cabeceras de seguridad en Vercel (nosniff, X-Frame-Options, HSTS, Referrer y
   Permissions-Policy); los XML se abren como texto plano (no pueden ejecutar scripts); carga
   diferida de pantallas (bundle inicial 413 KB → 225 KB).
+
+## Novedades v5.3 — Integraciones con varias empresas
+
+- Menú **Integraciones** desplegable: lista las empresas con las que compartimos clientes y
+  abre el panel de cada una (su API, nuestra clave para ella, sus lotes y su traza).
+- **Agregar empresa** (solo administrador, permiso `integracion.empresas`): nombre, URL de su
+  API y su token. No se toca código ni Render. Al guardar se genera **nuestra clave** para esa
+  empresa y se muestra una sola vez.
+- Seguridad: el token de cada empresa se guarda **cifrado** (Fernet, llave derivada de
+  `CIFRADO_CLAVE` o `SECRET_KEY`); de nuestra clave solo se guarda la huella SHA-256. En
+  producción no se aceptan URLs que apunten a la red interna del servidor.
+- La primera empresa se crea sola desde las variables `INTEGRACION_SOCIO_*` anteriores y su
+  historial (lotes, traza y clientes) pasa a su nombre comercial. Las claves de
+  `INTEGRACION_API_KEYS` siguen funcionando.
+- Maestro de clientes: filtro por empresa de origen.
+- Procedimientos nuevos: `sp_socios_listar`, `sp_socio_config`, `sp_socio_guardar`,
+  `sp_socio_entrada`, `sp_socio_por_clave`, `sp_socio_migrar`. Tabla nueva: `integracion_socio`.
+- Endpoints: `GET/POST /api/integracion/socios`, `PATCH /api/integracion/socios/<id>`,
+  `POST /api/integracion/socios/<id>/{probar,importar,importar-archivo,clave-entrante}`,
+  `GET /api/integracion/socios/<id>/estado`, y `?socio=<id>` en lotes y traza.

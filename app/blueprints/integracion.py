@@ -1,19 +1,25 @@
-"""API de clientes para el grupo pareado (ida y vuelta) y su panel de administración.
+"""API de clientes para las empresas con las que compartimos clientes y su panel.
 
-API expuesta al otro grupo (servidor a servidor, con clave en la cabecera X-API-Key o
-Authorization: Bearer <clave>; las claves están en INTEGRACION_API_KEYS):
+API expuesta a cada empresa (servidor a servidor, con su clave en la cabecera X-API-Key o
+Authorization: Bearer <clave>). Las claves se generan al registrar la empresa en el panel
+(también se aceptan las de INTEGRACION_API_KEYS):
   GET  /api/integracion/estructura                         contrato: campos y clave única
   GET  /api/integracion/clientes?desde=&pagina=&por_pagina= nuestros clientes (paginado)
   GET  /api/integracion/clientes/<tipo>/<numero>           un cliente
   POST /api/integracion/clientes                           el otro grupo nos envía sus clientes
 
-Panel (personal con el permiso integracion.gestionar):
-  GET  /api/integracion/estado
-  POST /api/integracion/importar               lee la API del otro grupo y la carga
-  POST /api/integracion/importar-archivo       carga un JSON con clientes
-  GET  /api/integracion/lotes
-  GET  /api/integracion/lotes/<id>?estado=      lote con sus registros de la tabla stage
-  GET  /api/integracion/traza?direccion=
+Panel (permiso integracion.gestionar; altas y cambios con integracion.empresas):
+  GET   /api/integracion/socios                          empresas registradas
+  POST  /api/integracion/socios                          agrega una empresa (URL + token)
+  PATCH /api/integracion/socios/<id>                     edita URL, token, estado
+  POST  /api/integracion/socios/<id>/clave-entrante      nueva clave para que nos lea
+  GET   /api/integracion/socios/<id>/estado
+  POST  /api/integracion/socios/<id>/probar
+  POST  /api/integracion/socios/<id>/importar            lee su API y la carga
+  POST  /api/integracion/socios/<id>/importar-archivo    carga un JSON con sus clientes
+  GET   /api/integracion/lotes?socio=
+  GET   /api/integracion/lotes/<id>?estado=               lote con sus registros de la tabla stage
+  GET   /api/integracion/traza?socio=&direccion=
 
 Toda llamada a la API expuesta queda en la traza (quién, cuándo, resultado, registros).
 """
@@ -27,7 +33,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
-from ..extensions import limiter
+from ..extensions import db, limiter
 from ..services import integracion as integ
 from ..services import procedimientos as sp
 from .auth import _usuario_actual, require_permiso
@@ -79,7 +85,7 @@ def _clave_recibida():
 def _sistema_autorizado():
     """Valida la clave del sistema que llama. Deja la traza de los intentos rechazados."""
     g.integ_inicio = time.monotonic()
-    if not integ.claves_entrantes():
+    if not integ.hay_claves_entrantes():
         integ.trazar(
             "entrada", None, request.method, request.url, 503, False, mensaje="API sin claves configuradas", ip=_ip()
         )
@@ -216,59 +222,102 @@ def recibir():
 # ------------------------------------------------------------------ panel (vuelta)
 
 
-@bp.get("/integracion/estado")
+PERMISO_EMPRESAS = "integracion.empresas"
+
+
+def _socio(socio_id):
+    return integ.obtener_socio(socio_id)
+
+
+def _nombre_socio():
+    """Nombre de la empresa del filtro ?socio=<id> (o None para todas)."""
+    socio_id = request.args.get("socio", type=int)
+    return integ.socio_publico(socio_id)["nombre"] if socio_id else None
+
+
+@bp.get("/integracion/socios")
 @jwt_required()
-def estado():
-    require_permiso(PERMISO)
-    datos = integ.socio()
-    url = datos["url"]
-    disponible = sp.disponibles()
+def socios():
+    rol = require_permiso(PERMISO)
     return jsonify(
-        disponible=disponible,
-        sistema=current_app.config.get("INTEGRACION_SISTEMA"),
-        socio={
-            "nombre": datos["nombre"],
-            "url": integ._sin_query(url),
-            "configurado": bool(url),
-            "tiene_clave": datos["tiene_clave"],
-        },
-        nuestra_api={
-            "url": request.host_url.rstrip("/") + "/api/integracion/clientes",
-            "sistemas_con_clave": sorted(integ.claves_entrantes()),
-        },
-        reintentos=current_app.config.get("INTEGRACION_REINTENTOS"),
-        resumen=sp.filas("sp_clientes_resumen") if disponible else [],
-        ultimo_lote=(sp.columna("sp_lotes_listar", "lote", 1) or [None])[0] if disponible else None,
+        socios=integ.socios(),
+        puede_administrar=PERMISO_EMPRESAS in {p.codigo for p in rol.permisos},
+        disponible=sp.disponibles(),
     )
 
 
-@bp.post("/integracion/probar")
+@bp.post("/integracion/socios")
 @jwt_required()
-def probar():
-    """¿Está activa la API del otro grupo? Una llamada de prueba que queda en la traza."""
+def crear_socio():
+    require_permiso(PERMISO_EMPRESAS)
+    socio, clave = integ.guardar_socio(None, request.get_json(silent=True) or {}, _usuario_actual().id)
+    return jsonify(socio=socio, clave_entrante=clave, mensaje=f"{socio['nombre']} quedó registrada."), 201
+
+
+@bp.patch("/integracion/socios/<int:socio_id>")
+@jwt_required()
+def editar_socio(socio_id):
+    require_permiso(PERMISO_EMPRESAS)
+    data = request.get_json(silent=True) or {}
+    data.pop("nombre", None)  # el nombre se fija al crear (lotes y traza lo usan)
+    socio, _ = integ.guardar_socio(socio_id, data, _usuario_actual().id)
+    return jsonify(socio=socio)
+
+
+@bp.post("/integracion/socios/<int:socio_id>/clave-entrante")
+@jwt_required()
+def nueva_clave_entrante(socio_id):
+    """Genera otra clave para la empresa: la anterior deja de funcionar al instante."""
+    require_permiso(PERMISO_EMPRESAS)
+    integ.socio_publico(socio_id)
+    clave = integ.generar_clave_entrante(socio_id)
+    db.session.commit()
+    return jsonify(socio=integ.socio_publico(socio_id), clave_entrante=clave)
+
+
+@bp.get("/integracion/socios/<int:socio_id>/estado")
+@jwt_required()
+def estado(socio_id):
+    require_permiso(PERMISO)
+    socio = integ.obtener_socio(socio_id)
+    publico = integ.socio_publico(socio_id)
+    return jsonify(
+        disponible=sp.disponibles(),
+        sistema=current_app.config.get("INTEGRACION_SISTEMA"),
+        socio={**publico, "url": integ._sin_query(socio["url"]), "clave_ilegible": socio["clave_ilegible"]},
+        nuestra_api={"url": request.host_url.rstrip("/") + "/api/integracion/clientes"},
+        reintentos=current_app.config.get("INTEGRACION_REINTENTOS"),
+    )
+
+
+@bp.post("/integracion/socios/<int:socio_id>/probar")
+@jwt_required()
+def probar(socio_id):
+    """¿Está activa la API de la empresa? Una llamada de prueba que queda en la traza."""
     require_permiso(PERMISO)
     try:
-        return jsonify(integ.probar_socio())
+        return jsonify(integ.probar_socio(_socio(socio_id)))
     except integ.IntegracionError as exc:
         raise ApiError("integracion_no_configurada", str(exc), 400) from None
 
 
-@bp.post("/integracion/importar")
+@bp.post("/integracion/socios/<int:socio_id>/importar")
 @jwt_required()
-def importar():
+def importar(socio_id):
     require_permiso(PERMISO)
-    lote = integ.importar_socio(_usuario_actual().id)
+    lote = integ.importar_socio(_usuario_actual().id, _socio(socio_id))
     return jsonify(lote=lote), (201 if lote["estado"] == "completado" else 502)
 
 
-@bp.post("/integracion/importar-archivo")
+@bp.post("/integracion/socios/<int:socio_id>/importar-archivo")
 @jwt_required()
-def importar_archivo():
+def importar_archivo(socio_id):
     require_permiso(PERMISO)
+    socio = _socio(socio_id)
     data = request.get_json(silent=True) or {}
-    origen = (data.get("origen") or integ.socio()["nombre"]).strip()[:80]
     registros = integ.extraer_registros(data.get("registros") if "registros" in data else data)
-    lote = integ.recibir(origen, "archivo", registros, _usuario_actual().id)
+    archivo = "archivo: " + str(data.get("archivo") or "clientes.json")[:120]
+    lote = integ.recibir(socio["nombre"], "archivo", registros, _usuario_actual().id, archivo, socio.get("mapeo"))
     return jsonify(lote=lote), 201
 
 
@@ -277,7 +326,9 @@ def importar_archivo():
 def lotes():
     require_permiso(PERMISO)
     sp.exigir()
-    return jsonify(lotes=sp.columna("sp_lotes_listar", "lote", request.args.get("limite", 30, type=int)))
+    return jsonify(
+        lotes=sp.columna("sp_lotes_listar", "lote", request.args.get("limite", 30, type=int), _nombre_socio())
+    )
 
 
 @bp.get("/integracion/lotes/<int:lote_id>")
@@ -298,4 +349,5 @@ def traza():
     require_permiso(PERMISO)
     sp.exigir()
     direccion = request.args.get("direccion") if request.args.get("direccion") in ("entrada", "salida") else None
-    return jsonify(traza=sp.columna("sp_traza_listar", "traza", direccion, request.args.get("limite", 100, type=int)))
+    limite = request.args.get("limite", 100, type=int)
+    return jsonify(traza=sp.columna("sp_traza_listar", "traza", direccion, limite, _nombre_socio()))

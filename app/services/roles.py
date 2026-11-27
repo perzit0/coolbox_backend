@@ -32,6 +32,10 @@ PERMISOS = [
         "integracion.gestionar",
         "Intercambiar clientes con el grupo pareado por API: importar, revisar la tabla stage y la traza",
     ),
+    (
+        "integracion.empresas",
+        "Agregar o editar las empresas con las que se comparten clientes (URL, token y nuestra clave)",
+    ),
     ("comprobantes.ver", "Consultar el gestor documental de comprobantes (PDF, XML y CDR por año, mes y día)"),
     (
         "comprobantes.gestionar",
@@ -81,6 +85,7 @@ ROLES = [
             "pedidos.gestionar",
             "clientes.gestionar",
             "integracion.gestionar",
+            "integracion.empresas",
             "comprobantes.ver",
             "comprobantes.gestionar",
         ],

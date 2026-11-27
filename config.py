@@ -200,3 +200,7 @@ class Config:
     INTEGRACION_MAX_PAGINAS = _entero("INTEGRACION_MAX_PAGINAS", 50)
     INTEGRACION_MAX_REGISTROS = _entero("INTEGRACION_MAX_REGISTROS", 5000)
     INTEGRACION_MAX_MB = _entero("INTEGRACION_MAX_MB", 5)
+    # Llave para cifrar los tokens de las empresas (si falta se usa SECRET_KEY)
+    CIFRADO_CLAVE = _texto("CIFRADO_CLAVE")
+    # En producción no se permite registrar APIs en direcciones internas (localhost, 10.x, 192.168.x...)
+    INTEGRACION_PERMITIR_LOCAL = _entero("INTEGRACION_PERMITIR_LOCAL", 0 if EN_PRODUCCION else 1)
