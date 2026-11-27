@@ -117,6 +117,7 @@ def create_app(config_object="config.Config"):
     from .blueprints.maestro_clientes import bp as maestro_clientes_bp
     from .blueprints.integracion import bp as integracion_bp
     from .blueprints.comprobantes import bp as comprobantes_bp
+    from .blueprints.respaldo import bp as respaldo_bp
 
     for blueprint in (
         auth_bp,
@@ -134,6 +135,7 @@ def create_app(config_object="config.Config"):
         maestro_clientes_bp,
         integracion_bp,
         comprobantes_bp,
+        respaldo_bp,
     ):
         app.register_blueprint(blueprint, url_prefix="/api")
 

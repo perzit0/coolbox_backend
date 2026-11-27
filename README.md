@@ -301,3 +301,26 @@ Variables nuevas: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `COMPROBANTES_BUCKET`.
 - Endpoints: `GET/POST /api/integracion/socios`, `PATCH /api/integracion/socios/<id>`,
   `POST /api/integracion/socios/<id>/{probar,importar,importar-archivo,clave-entrante}`,
   `GET /api/integracion/socios/<id>/estado`, y `?socio=<id>` en lotes y traza.
+
+## Novedades v5.4 — Respaldo local de comprobantes en la PC
+
+Observación del profesor: "los PDF, XML y CDR deben descargarse siempre a una carpeta local
+organizada, por si falla la nube".
+
+- **Agente de respaldo** (`scripts/respaldo_local/`): un script de PowerShell que corre en la PC
+  cada 5 minutos (tarea programada de Windows) y copia todos los comprobantes a
+  `C:\COOLBOX\comprobantes\<tipo>\<AAAA>\<MM>\<DD>\` con la misma estructura del sistema.
+  Solo baja lo que falta, verifica la huella SHA-256 antes de guardar y, con
+  `sincronizar_ahora.bat verificar`, repone los archivos alterados.
+- **Instalación**: `instalar_respaldo.bat` copia el agente a `C:\COOLBOX\respaldo`, genera la
+  clave (se pega una vez en Render como `RESPALDO_API_KEY`), programa la tarea y hace la
+  primera copia. La clave queda en `C:\COOLBOX\respaldo\config.json`, fuera de los repositorios.
+- **Tres copias independientes**: carpeta del servidor, Supabase Storage y la PC. Si el disco de
+  Render se borra, el servidor recupera el archivo de la nube; si la nube falla, la PC ya lo tiene.
+- La pantalla *Comprobantes* muestra la tarjeta **Copia local en la PC** (equipo, archivos y
+  última sincronización).
+- Endpoints (cabecera `X-API-Key` = `RESPALDO_API_KEY`): `GET /api/respaldo/comprobantes`,
+  `GET /api/respaldo/comprobantes/<id>`, `POST /api/respaldo/latido`.
+  Procedimientos: `sp_respaldo_archivos`, `sp_respaldo_latido`, `sp_respaldo_equipos`.
+- Integración: espera hasta 55 s por llamada (el servidor gratuito del otro grupo tarda en
+  despertar) sin pasar de 100 s por importación (`INTEGRACION_PRESUPUESTO_SEGUNDOS`).

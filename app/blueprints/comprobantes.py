@@ -6,6 +6,8 @@ GET  /api/comprobantes/archivos/<id>               entrega el archivo desde la c
 POST /api/comprobantes/archivos/<id>/verificar     compara la huella SHA-256 (carpeta y nube)
 POST /api/comprobantes/sincronizar                 completa la carpeta y la nube (solo Administrador)
 
+Copia local en la PC: agente scripts/respaldo_local (ver blueprints/respaldo.py).
+
 Lo que se muestra sale del índice comprobante_archivo (procedimientos sp_comprobantes_*);
 los archivos se leen de la carpeta local, no de la API de facturación.
 """
@@ -72,6 +74,10 @@ def resumen():
             "en_nube": sum(f["en_nube"] for f in arbol),
         },
         arbol=arbol,
+        respaldo_local={
+            "habilitado": len(current_app.config.get("RESPALDO_API_KEY") or "") >= 32,
+            "equipos": sp.columna("sp_respaldo_equipos", "equipo"),
+        },
     )
 
 

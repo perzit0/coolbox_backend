@@ -196,11 +196,16 @@ class Config:
     # Reintentos si su API no responde (espera 2 s, 4 s, 8 s...)
     INTEGRACION_REINTENTOS = _entero("INTEGRACION_REINTENTOS", 3)
     INTEGRACION_ESPERA_SEGUNDOS = _decimal("INTEGRACION_ESPERA_SEGUNDOS", 2)
-    INTEGRACION_TIMEOUT = _entero("INTEGRACION_TIMEOUT", 20)
+    # El servidor gratuito del otro grupo tarda 30-60 s en despertar: se espera hasta 55 s por
+    # llamada, pero una importación completa no pasa de 100 s (gunicorn corta a los 120 s).
+    INTEGRACION_TIMEOUT = _entero("INTEGRACION_TIMEOUT", 55)
+    INTEGRACION_PRESUPUESTO_SEGUNDOS = _entero("INTEGRACION_PRESUPUESTO_SEGUNDOS", 100)
     INTEGRACION_MAX_PAGINAS = _entero("INTEGRACION_MAX_PAGINAS", 50)
     INTEGRACION_MAX_REGISTROS = _entero("INTEGRACION_MAX_REGISTROS", 5000)
     INTEGRACION_MAX_MB = _entero("INTEGRACION_MAX_MB", 5)
     # Llave para cifrar los tokens de las empresas (si falta se usa SECRET_KEY)
     CIFRADO_CLAVE = _texto("CIFRADO_CLAVE")
+    # Clave del agente que copia los comprobantes a la PC (respaldo local). Mínimo 32 caracteres.
+    RESPALDO_API_KEY = _texto("RESPALDO_API_KEY")
     # En producción no se permite registrar APIs en direcciones internas (localhost, 10.x, 192.168.x...)
     INTEGRACION_PERMITIR_LOCAL = _entero("INTEGRACION_PERMITIR_LOCAL", 0 if EN_PRODUCCION else 1)

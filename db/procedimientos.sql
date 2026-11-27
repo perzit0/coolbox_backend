@@ -1188,6 +1188,54 @@ AS $$
     SELECT * FROM comprobante_archivo WHERE id = p_id
 $$;
 
+-- Respaldo local: índice de archivos por páginas (id creciente) para que el agente de la PC
+-- descargue lo que le falte, con la ruta (tipo/año/mes/día) y la huella para verificarlo.
+CREATE FUNCTION sp_respaldo_archivos(p_desde_id integer, p_limite integer)
+RETURNS TABLE (archivo jsonb)
+LANGUAGE sql STABLE
+AS $$
+    SELECT jsonb_build_object('id', a.id, 'ruta', a.ruta, 'formato', a.formato, 'bytes', a.bytes,
+                              'sha256', a.sha256, 'tipo', a.tipo, 'fecha_emision', a.fecha_emision)
+    FROM comprobante_archivo a
+    WHERE a.id > coalesce(p_desde_id, 0)
+    ORDER BY a.id
+    LIMIT least(greatest(coalesce(p_limite, 500), 1), 1000)
+$$;
+
+-- Latido del agente: cuántos archivos tiene la copia local de cada PC y cuándo se sincronizó.
+CREATE FUNCTION sp_respaldo_latido(p_datos jsonb)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_equipo text := sp_texto(p_datos->>'equipo', 80);
+BEGIN
+    IF v_equipo IS NULL THEN
+        PERFORM sp_error('equipo_requerido', 'Indique el nombre del equipo.', 400);
+    END IF;
+    INSERT INTO respaldo_equipo (equipo, carpeta, archivos, bytes, descargados, pendientes, errores, ultimo_contacto)
+    VALUES (
+        v_equipo, sp_texto(p_datos->>'carpeta', 200),
+        greatest(coalesce((p_datos->>'archivos')::integer, 0), 0), greatest(coalesce((p_datos->>'bytes')::bigint, 0), 0),
+        greatest(coalesce((p_datos->>'descargados')::integer, 0), 0), greatest(coalesce((p_datos->>'pendientes')::integer, 0), 0),
+        greatest(coalesce((p_datos->>'errores')::integer, 0), 0), now()
+    )
+    ON CONFLICT (equipo) DO UPDATE SET
+        carpeta = EXCLUDED.carpeta, archivos = EXCLUDED.archivos, bytes = EXCLUDED.bytes,
+        descargados = EXCLUDED.descargados, pendientes = EXCLUDED.pendientes,
+        errores = EXCLUDED.errores, ultimo_contacto = now();
+END
+$$;
+
+CREATE FUNCTION sp_respaldo_equipos()
+RETURNS TABLE (equipo jsonb)
+LANGUAGE sql STABLE
+AS $$
+    SELECT to_jsonb(r) || jsonb_build_object('total_indice', (SELECT count(*) FROM comprobante_archivo))
+    FROM respaldo_equipo r
+    ORDER BY r.ultimo_contacto DESC
+$$;
+
 -- Árbol de carpetas: cuántos comprobantes y archivos hay por año, mes, día y tipo.
 CREATE FUNCTION sp_comprobantes_arbol()
 RETURNS TABLE (anio integer, mes integer, dia integer, tipo text, comprobantes integer, archivos integer,

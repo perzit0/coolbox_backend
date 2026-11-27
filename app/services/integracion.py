@@ -440,10 +440,16 @@ def _get_con_reintentos(url, cabeceras, lote_id, nombre):
     reintentos = max(int(_cfg("INTEGRACION_REINTENTOS", 3)), 1)
     espera = float(_cfg("INTEGRACION_ESPERA_SEGUNDOS", 2))
     ultimo = "Sin respuesta"
+    limite = time.monotonic() + float(_cfg("INTEGRACION_PRESUPUESTO_SEGUNDOS", 100))
+    hechos = 0
     for intento in range(1, reintentos + 1):
         inicio = time.monotonic()
+        restante = limite - inicio
+        if restante < 5:  # sin tiempo para otro intento dentro de la petición
+            break
+        hechos = intento
         try:
-            resp = requests.get(url, headers=cabeceras, timeout=_cfg("INTEGRACION_TIMEOUT", 20))
+            resp = requests.get(url, headers=cabeceras, timeout=min(float(_cfg("INTEGRACION_TIMEOUT", 55)), restante))
             ms = int((time.monotonic() - inicio) * 1000)
             if resp.status_code == 200:
                 if len(resp.content) > int(_cfg("INTEGRACION_MAX_MB", 5)) * 1024 * 1024:
@@ -486,9 +492,9 @@ def _get_con_reintentos(url, cabeceras, lote_id, nombre):
             ultimo = f"Sin respuesta: {type(exc).__name__}"
             trazar("salida", nombre, "GET", url, None, False, intento, ms, mensaje=ultimo, lote_id=lote_id)
         if intento < reintentos:
-            time.sleep(espera * (2 ** (intento - 1)))  # 2 s, 4 s, 8 s...
+            time.sleep(min(espera * (2 ** (intento - 1)), max(limite - time.monotonic() - 5, 0)))  # 2 s, 4 s...
     raise IntegracionError(
-        f"La API de la empresa no respondió después de {reintentos} intentos ({ultimo}).", reintentos
+        f"La API de la empresa no respondió después de {hechos} intentos ({ultimo}).", hechos
     )
 
 
@@ -505,7 +511,7 @@ def probar_socio(socio):
     url = _url_socio(socio)
     inicio = time.monotonic()
     try:
-        resp = requests.get(url, headers=_cabeceras(socio), timeout=_cfg("INTEGRACION_TIMEOUT", 20))
+        resp = requests.get(url, headers=_cabeceras(socio), timeout=_cfg("INTEGRACION_TIMEOUT", 55))
     except requests.RequestException as exc:
         ms = int((time.monotonic() - inicio) * 1000)
         mensaje = f"Prueba de conexión: sin respuesta ({type(exc).__name__})"

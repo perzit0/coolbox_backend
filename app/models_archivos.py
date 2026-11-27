@@ -58,3 +58,18 @@ class ComprobanteArchivo(db.Model):
             "en_nube": self.en_nube,
             "fecha_guardado": iso(self.fecha_guardado),
         }
+
+
+class RespaldoEquipo(db.Model):
+    """PC que guarda la copia local de los comprobantes (agente de respaldo)."""
+
+    __tablename__ = "respaldo_equipo"
+    id = db.Column(db.Integer, primary_key=True)
+    equipo = db.Column(db.String(80), nullable=False, unique=True)  # nombre de la PC
+    carpeta = db.Column(db.String(200))  # carpeta local donde guarda
+    archivos = db.Column(db.Integer, nullable=False, default=0)  # archivos que tiene
+    bytes = db.Column(db.BigInteger, nullable=False, default=0)
+    descargados = db.Column(db.Integer, nullable=False, default=0)  # en la última pasada
+    pendientes = db.Column(db.Integer, nullable=False, default=0)
+    errores = db.Column(db.Integer, nullable=False, default=0)
+    ultimo_contacto = db.Column(db.DateTime(timezone=True), nullable=False, default=ahora)
