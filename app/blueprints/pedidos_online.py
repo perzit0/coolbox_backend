@@ -21,7 +21,7 @@ reingreso al stock los hace el procedimiento almacenado sp_pedido_devolver; el d
 extorna al mismo medio de pago y se emite la nota de crédito que modifica la boleta.
 """
 
-from flask import Blueprint, current_app, jsonify, request, send_file
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
@@ -216,13 +216,7 @@ def reintentar_comprobante(pid, tipo):
 def descargar_comprobante(pid, tipo, formato):
     require_permiso(PERMISO)
     comprobante = _get(pid).comprobante(tipo)
-    ruta = (
-        {"pdf": comprobante.comprobante_pdf, "xml": comprobante.comprobante_xml}.get(formato) if comprobante else None
-    )
-    archivo = sunat_svc.archivo_local(ruta)
-    if not archivo:
-        raise ApiError("comprobante_no_disponible", "El comprobante aún no está disponible.", 404)
-    return send_file(archivo, as_attachment=False)
+    return sunat_svc.entregar(comprobante, comprobante.tipo if comprobante else None, formato)
 
 
 # ------------------------------------------------------------------ devoluciones después de la entrega
@@ -295,8 +289,4 @@ def reintentar_nota_devolucion(did):
 def descargar_nota_devolucion(did, formato):
     require_permiso(PERMISO)
     devolucion = db.get_or_404(PedidoDevolucion, did)
-    ruta = {"pdf": devolucion.comprobante_pdf, "xml": devolucion.comprobante_xml}.get(formato)
-    archivo = sunat_svc.archivo_local(ruta)
-    if not archivo:
-        raise ApiError("comprobante_no_disponible", "La nota de crédito aún no está disponible.", 404)
-    return send_file(archivo, as_attachment=False)
+    return sunat_svc.entregar(devolucion, "nota_credito", formato, "La nota de crédito aún no está disponible.")

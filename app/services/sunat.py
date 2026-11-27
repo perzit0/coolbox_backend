@@ -7,8 +7,10 @@ Flujo por documento (requerimiento del profesor):
   2. POST /boletas | /invoices | /credit-notes -> crea el documento (id, serie y correlativo).
   3. POST /{id}/send-sunat                     -> firma y envía a la SUNAT (entorno beta).
   4. POST /{id}/generate-pdf                   -> genera el PDF.
-  5. GET  /{id}/download-pdf | download-xml    -> se guardan en comprobantes/<tipo>/<AAAA-MM>/<DD>/.
-La ruta de los archivos queda en la base de datos y las consultas posteriores leen el archivo local.
+  5. GET  /{id}/download-pdf | -xml | -cdr     -> PDF, XML firmado y CDR (constancia de la SUNAT)
+     se guardan en comprobantes/<tipo>/<AAAA>/<MM>/<DD>/ y en la nube (ver services/archivos.py).
+La ruta de los archivos queda en la base de datos y las consultas posteriores leen el archivo local;
+si se perdió, se recupera de la nube y, como último recurso, se vuelve a descargar de la API.
 
 Si un paso falla, el id del documento en la API se conserva y el reintento continúa desde ese
 punto, sin crear un documento duplicado (los correlativos de la SUNAT no se pueden reutilizar).
@@ -18,13 +20,14 @@ comprobante_api_id, estado_sunat...), por eso el mismo flujo sirve para los dos.
 """
 
 import logging
-import re
 from decimal import ROUND_HALF_UP, Decimal
-from pathlib import Path
 
 import requests
-from flask import current_app
+from flask import current_app, send_file
 
+from ..errors import ApiError
+from ..extensions import db
+from . import archivos
 from .tiempo import a_local
 
 log = logging.getLogger("coolbox.sunat")
@@ -252,24 +255,8 @@ def _cuerpo_nota_devolucion_pedido(devolucion):
 
 
 def archivo_local(ruta):
-    """Ruta absoluta de un comprobante guardado, solo si está dentro de COMPROBANTES_DIR
-    (evita que una ruta manipulada en la BD entregue otros archivos del servidor)."""
-    if not ruta:
-        return None
-    base = Path(_cfg("COMPROBANTES_DIR")).resolve()
-    archivo = Path(ruta).resolve()
-    if base != archivo and base not in archivo.parents:
-        log.warning("Ruta de comprobante fuera de %s: %s", base, ruta)
-        return None
-    return archivo if archivo.is_file() else None
-
-
-def _carpeta(fecha, nombre):
-    """comprobantes/<tipo>/<AAAA-MM>/<DD>/ según la fecha local del comprobante."""
-    local = a_local(fecha)
-    ruta = Path(_cfg("COMPROBANTES_DIR")) / nombre / local.strftime("%Y-%m") / local.strftime("%d")
-    ruta.mkdir(parents=True, exist_ok=True)
-    return ruta
+    """Archivo local de un comprobante (si falta en la carpeta, se baja de la nube)."""
+    return archivos.obtener(ruta)
 
 
 def _mensaje_error(resp):
@@ -303,18 +290,62 @@ def _enviar(doc, ruta, headers):
     return (resp.json().get("message") or "Aceptado por SUNAT (beta)")[:300]
 
 
-def _guardar(doc, ruta, carpeta_nombre, headers):
+# formato -> (columna del documento, ¿obligatorio?). La CDR es la constancia de recepción de la
+# SUNAT; si la API no la tiene disponible, el comprobante igual queda con su PDF y XML.
+FORMATOS = {"pdf": ("comprobante_pdf", True), "xml": ("comprobante_xml", True), "cdr": ("comprobante_cdr", False)}
+
+
+def _meta(doc, documento):
+    """Datos del índice del gestor documental: cliente y venta/pedido de origen."""
+    clase = type(doc).__name__
+    if clase == "Venta":
+        doc_cli, nombre, origen, codigo = doc.cliente_documento, doc.cliente_nombre, "venta", doc.codigo
+    elif clase == "Devolucion":
+        venta = doc.venta
+        doc_cli, nombre, origen, codigo = venta.cliente_documento, venta.cliente_nombre, "devolucion", doc.codigo
+    else:  # PedidoComprobante o PedidoDevolucion
+        pedido = doc.pedido
+        doc_cli, nombre = pedido.nro_documento, f"{pedido.nombres} {pedido.apellidos}"
+        origen = "pedido" if clase == "PedidoComprobante" else "pedido_devolucion"
+        codigo = pedido.codigo if clase == "PedidoComprobante" else doc.codigo
+    return {
+        "tipo": documento,
+        "serie": doc.comprobante_serie,
+        "numero": doc.comprobante_numero,
+        "fecha_emision": a_local(doc.fecha).date().isoformat(),
+        "cliente_documento": doc_cli,
+        "cliente_nombre": (nombre or "")[:200],
+        "origen": origen,
+        "origen_codigo": codigo,
+    }
+
+
+def _guardar(doc, documento, ruta, headers):
+    """Descarga PDF, XML y CDR y los guarda en el gestor documental. Devuelve el mensaje de la CDR."""
     base_url = _url(f"{ruta}/{doc.comprobante_api_id}")
     timeout = _cfg("SUNAT_TIMEOUT", 30)
     requests.post(base_url + "/generate-pdf", headers=headers, timeout=timeout).raise_for_status()
-    carpeta = _carpeta(doc.fecha, carpeta_nombre)
-    base = re.sub(r"[^A-Za-z0-9_-]", "", f"{doc.comprobante_serie}-{doc.comprobante_numero}") or doc.codigo
-    for formato, columna in (("pdf", "comprobante_pdf"), ("xml", "comprobante_xml")):
-        resp = requests.get(f"{base_url}/download-{formato}", headers=headers, timeout=timeout)
-        resp.raise_for_status()
-        destino = carpeta / f"{base}.{formato}"
-        destino.write_bytes(resp.content)
-        setattr(doc, columna, destino.as_posix())
+    meta = _meta(doc, documento)
+    mensaje_cdr = None
+    for formato, (columna, obligatorio) in FORMATOS.items():
+        try:
+            resp = requests.get(f"{base_url}/download-{formato}", headers=headers, timeout=timeout)
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            if obligatorio:
+                raise
+            log.warning("%s %s: la API no entregó la CDR: %s", documento, doc.codigo, exc)
+            continue
+        rel = archivos.ruta_relativa(
+            documento, doc.fecha, doc.comprobante_serie, doc.comprobante_numero, formato, doc.codigo
+        )
+        archivos.guardar(rel, resp.content, formato, meta)
+        setattr(doc, columna, rel)
+        if formato == "cdr":
+            codigo, descripcion = archivos.leer_cdr(resp.content)
+            if descripcion:
+                mensaje_cdr = f"{descripcion} (CDR código {codigo})"[:300]
+    return mensaje_cdr
 
 
 def _emitir(doc, documento, armar_cuerpo):
@@ -322,7 +353,7 @@ def _emitir(doc, documento, armar_cuerpo):
     if not _cfg("SUNAT_API_URL"):
         doc.estado_sunat, doc.sunat_mensaje = "pendiente", "API de facturación no configurada."
         return doc
-    ruta, carpeta, _ = DOCUMENTOS[documento]
+    ruta, _, _ = DOCUMENTOS[documento]
     ultimo_error = None
     for intento in range(1, max(_cfg("SUNAT_REINTENTOS", 3), 1) + 1):
         doc.sunat_intentos = (doc.sunat_intentos or 0) + 1
@@ -331,7 +362,7 @@ def _emitir(doc, documento, armar_cuerpo):
             if not doc.comprobante_api_id:
                 _crear(doc, ruta, armar_cuerpo(), headers)
             mensaje = _enviar(doc, ruta, headers)
-            _guardar(doc, ruta, carpeta, headers)
+            mensaje = _guardar(doc, documento, ruta, headers) or mensaje
             doc.estado_sunat, doc.sunat_mensaje = "aceptado", mensaje
             log.info(
                 "%s %s: %s-%s aceptado (intento %s)",
@@ -369,3 +400,36 @@ def emitir_pedido(comprobante):
 def emitir_nota_devolucion_pedido(devolucion):
     """Nota de crédito de la devolución de un pedido online entregado."""
     return _emitir(devolucion, "nota_credito", lambda: _cuerpo_nota_devolucion_pedido(devolucion))
+
+
+def _recuperar(doc, documento):
+    """Último recurso: el archivo no está en la carpeta ni en la nube. Si el comprobante fue
+    aceptado, se vuelve a descargar de la API y queda otra vez guardado."""
+    if doc.estado_sunat != "aceptado" or not doc.comprobante_api_id or not _cfg("SUNAT_API_URL"):
+        return False
+    try:
+        _guardar(doc, documento, DOCUMENTOS[documento][0], _login())
+        db.session.commit()
+        log.info("%s %s: archivos recuperados desde la API de facturación", documento, doc.codigo)
+        return True
+    except (requests.RequestException, SunatError, ValueError, OSError) as exc:
+        db.session.rollback()
+        log.warning("%s %s: no se pudieron recuperar los archivos: %s", documento, doc.codigo, exc)
+        return False
+
+
+def entregar(doc, documento, formato, mensaje="El comprobante aún no está disponible."):
+    """Respuesta HTTP con el PDF, XML o CDR guardado (carpeta local -> nube -> API)."""
+    columna = FORMATOS.get(formato, (None,))[0]
+    if doc is None or not columna:
+        raise ApiError("comprobante_no_disponible", mensaje, 404)
+    archivo = archivos.obtener(getattr(doc, columna))
+    if not archivo and _recuperar(doc, documento):
+        archivo = archivos.obtener(getattr(doc, columna))
+    if not archivo:
+        if formato == "cdr" and doc.estado_sunat == "aceptado":
+            mensaje = "La API de facturación no entregó la CDR de este comprobante."
+        raise ApiError("comprobante_no_disponible", mensaje, 404)
+    if formato == "cdr":
+        return send_file(archivo, mimetype="application/zip", as_attachment=True, download_name=archivo.name)
+    return send_file(archivo, as_attachment=False)

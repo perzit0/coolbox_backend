@@ -386,7 +386,9 @@ def _get_con_reintentos(url, cabeceras, lote_id):
                     )
                     raise IntegracionError("La API del otro grupo no respondió en formato JSON.", intento)
                 cantidad = len(extraer_registros(cuerpo))
-                trazar("salida", nombre, "GET", url, 200, True, intento, ms, cantidad, "Correcto", lote_id=lote_id)
+                # Huella SHA-256 de lo recibido: permite demostrar después qué datos llegaron en esa llamada.
+                mensaje = f"Correcto · SHA-256 {sha256(resp.content).hexdigest()[:16]}"
+                trazar("salida", nombre, "GET", url, 200, True, intento, ms, cantidad, mensaje, lote_id=lote_id)
                 return cuerpo, intento
             ultimo = f"HTTP {resp.status_code}: {_texto_error(resp)}"
             trazar("salida", nombre, "GET", url, resp.status_code, False, intento, ms, mensaje=ultimo, lote_id=lote_id)
@@ -405,6 +407,35 @@ def _get_con_reintentos(url, cabeceras, lote_id):
     raise IntegracionError(
         f"La API del otro grupo no respondió después de {reintentos} intentos ({ultimo}).", reintentos
     )
+
+
+def probar_socio():
+    """Comprueba si la API del otro grupo está activa (una sola llamada, sin cargar datos)."""
+    datos = socio()
+    url = datos["url"]
+    if not url or not url.startswith(("http://", "https://")):
+        raise IntegracionError("Falta INTEGRACION_SOCIO_URL: la URL de la API de clientes del otro grupo.")
+    inicio = time.monotonic()
+    try:
+        resp = requests.get(url, headers=_cabeceras(), timeout=_cfg("INTEGRACION_TIMEOUT", 20))
+    except requests.RequestException as exc:
+        ms = int((time.monotonic() - inicio) * 1000)
+        mensaje = f"Prueba de conexión: sin respuesta ({type(exc).__name__})"
+        trazar("salida", datos["nombre"], "GET", url, None, False, 1, ms, mensaje=mensaje)
+        return {"activa": False, "http": None, "ms": ms, "registros": None, "mensaje": mensaje}
+    ms = int((time.monotonic() - inicio) * 1000)
+    registros = None
+    if resp.status_code == 200:
+        try:
+            registros = len(extraer_registros(resp.json()))
+        except ValueError:
+            registros = None
+    activa = resp.status_code == 200 and registros is not None
+    mensaje = (
+        "Prueba de conexión: activa" if activa else f"Prueba de conexión: HTTP {resp.status_code} {_texto_error(resp)}"
+    )
+    trazar("salida", datos["nombre"], "GET", url, resp.status_code, activa, 1, ms, registros, mensaje[:300])
+    return {"activa": activa, "http": resp.status_code, "ms": ms, "registros": registros, "mensaje": mensaje}
 
 
 def leer_socio(lote_id):

@@ -25,7 +25,7 @@ import urllib.request
 from datetime import timedelta
 from decimal import Decimal
 
-from flask import Blueprint, current_app, jsonify, request, send_file
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import create_access_token, get_jwt, get_jwt_identity, jwt_required, verify_jwt_in_request
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
@@ -823,13 +823,7 @@ def descargar_comprobante_pedido(codigo, tipo, formato):
     cliente = _cliente_actual()
     pedido = Pedido.query.filter_by(codigo=codigo.upper(), cliente_id=cliente.id).first()
     comprobante = pedido.comprobante(tipo) if pedido else None
-    ruta = None
-    if comprobante:
-        ruta = {"pdf": comprobante.comprobante_pdf, "xml": comprobante.comprobante_xml}.get(formato)
-    archivo = sunat_svc.archivo_local(ruta)
-    if not archivo:
-        raise ApiError("comprobante_no_disponible", "El comprobante aún no está disponible.", 404)
-    return send_file(archivo, as_attachment=False)
+    return sunat_svc.entregar(comprobante, comprobante.tipo if comprobante else None, formato)
 
 
 @bp.get("/clientes/me/pedidos/<codigo>/devoluciones/<int:did>/<formato>")
@@ -839,8 +833,4 @@ def descargar_nota_devolucion(codigo, did, formato):
     cliente = _cliente_actual()
     pedido = Pedido.query.filter_by(codigo=codigo.upper(), cliente_id=cliente.id).first()
     devolucion = next((d for d in pedido.devoluciones if d.id == did), None) if pedido else None
-    ruta = {"pdf": devolucion.comprobante_pdf, "xml": devolucion.comprobante_xml}.get(formato) if devolucion else None
-    archivo = sunat_svc.archivo_local(ruta)
-    if not archivo:
-        raise ApiError("comprobante_no_disponible", "La nota de crédito aún no está disponible.", 404)
-    return send_file(archivo, as_attachment=False)
+    return sunat_svc.entregar(devolucion, "nota_credito", formato, "La nota de crédito aún no está disponible.")

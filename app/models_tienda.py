@@ -330,6 +330,7 @@ class PedidoComprobante(db.Model):
     comprobante_api_id = db.Column(db.Integer)
     comprobante_pdf = db.Column(db.String(300))
     comprobante_xml = db.Column(db.String(300))
+    comprobante_cdr = db.Column(db.String(300))
     estado_sunat = db.Column(db.String(15), nullable=False, default="pendiente")
     sunat_mensaje = db.Column(db.String(300))
     sunat_intentos = db.Column(db.Integer, nullable=False, default=0)
@@ -349,6 +350,7 @@ class PedidoComprobante(db.Model):
             "sunat_mensaje": self.sunat_mensaje,
             "tiene_pdf": bool(self.comprobante_pdf),
             "tiene_xml": bool(self.comprobante_xml),
+            "tiene_cdr": bool(self.comprobante_cdr),
             "fecha": iso(self.fecha),
         }
 
@@ -420,6 +422,7 @@ class PedidoDevolucion(db.Model):
     comprobante_api_id = db.Column(db.Integer)
     comprobante_pdf = db.Column(db.String(300))
     comprobante_xml = db.Column(db.String(300))
+    comprobante_cdr = db.Column(db.String(300))
     estado_sunat = db.Column(db.String(15), nullable=False, default="pendiente")
     sunat_mensaje = db.Column(db.String(300))
     sunat_intentos = db.Column(db.Integer, nullable=False, default=0)
@@ -452,6 +455,7 @@ class PedidoDevolucion(db.Model):
             "sunat_mensaje": self.sunat_mensaje,
             "tiene_pdf": bool(self.comprobante_pdf),
             "tiene_xml": bool(self.comprobante_xml),
+            "tiene_cdr": bool(self.comprobante_cdr),
             "detalles": [d.to_dict() for d in self.detalles],
         }
 

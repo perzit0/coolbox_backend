@@ -402,6 +402,7 @@ class Venta(db.Model):
     comprobante_api_id = db.Column(db.Integer)  # id del comprobante en la API de facturación
     comprobante_pdf = db.Column(db.String(300))  # ruta relativa del PDF guardado
     comprobante_xml = db.Column(db.String(300))  # ruta relativa del XML guardado
+    comprobante_cdr = db.Column(db.String(300))  # constancia de recepción de la SUNAT (zip)
     estado_sunat = db.Column(db.String(15), nullable=False, default="pendiente")  # pendiente | aceptado | error
     sunat_mensaje = db.Column(db.String(300))
     sunat_intentos = db.Column(db.Integer, nullable=False, default=0)
@@ -479,6 +480,7 @@ class Venta(db.Model):
             "sunat_mensaje": self.sunat_mensaje,
             "tiene_pdf": bool(self.comprobante_pdf),
             "tiene_xml": bool(self.comprobante_xml),
+            "tiene_cdr": bool(self.comprobante_cdr),
             "monto_devuelto": float(self.monto_devuelto),
             "estado_devolucion": self.estado_devolucion,
         }
@@ -672,6 +674,7 @@ class Devolucion(db.Model):
     comprobante_api_id = db.Column(db.Integer)
     comprobante_pdf = db.Column(db.String(300))
     comprobante_xml = db.Column(db.String(300))
+    comprobante_cdr = db.Column(db.String(300))
     estado_sunat = db.Column(db.String(15), nullable=False, default="pendiente")
     sunat_mensaje = db.Column(db.String(300))
     sunat_intentos = db.Column(db.Integer, nullable=False, default=0)
@@ -708,6 +711,7 @@ class Devolucion(db.Model):
             "sunat_mensaje": self.sunat_mensaje,
             "tiene_pdf": bool(self.comprobante_pdf),
             "tiene_xml": bool(self.comprobante_xml),
+            "tiene_cdr": bool(self.comprobante_cdr),
             "detalles": [d.to_dict() for d in self.detalles],
         }
 
@@ -769,3 +773,6 @@ from .models_integracion import (  # noqa: E402,F401
     IntegracionLote,
     MaestroCliente,
 )
+
+# Gestor documental de comprobantes (PDF, XML y CDR)
+from .models_archivos import ComprobanteArchivo  # noqa: E402,F401

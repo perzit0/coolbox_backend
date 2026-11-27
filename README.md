@@ -237,3 +237,29 @@ El sistema se concentra en la venta en tienda y el control de caja. Roles: **Adm
   07 por ítem). El cliente ve y descarga la nota en "Mis compras".
 - **Corrección**: en PostgreSQL las ventas en caja y los pedidos online fallaban al bloquear el stock
   (`FOR UPDATE` con la carga conjunta de familia/marca). Ahora se bloquea solo la tabla principal.
+
+## Novedades v5.1 — Gestor documental de comprobantes y trazabilidad del API
+
+Observaciones del profesor: "descarga todo lo que la SUNAT te entrega, guárdalo en una carpeta
+estructurada y lee de ahí" y "mantengan la trazabilidad del API, no solo el caso feliz".
+
+**Gestor documental** (`app/services/archivos.py`, pantalla *Comprobantes*):
+- Al aceptarse un comprobante se descargan el PDF, el XML firmado y la **CDR** (constancia de
+  recepción de la SUNAT) y se guardan en `comprobantes/<tipo>/<AAAA>/<MM>/<DD>/`
+  (p. ej. `boletas/2026/11/17/B001-000037-CDR.zip`). El mensaje de la venta se toma de la CDR.
+- Los botones PDF / XML / CDR leen la carpeta local: no se consulta la API de facturación.
+- Copia en **Supabase Storage** (bucket privado `comprobantes`, misma ruta). Si el disco de Render
+  se borró, el archivo se baja de la nube; si tampoco está, se vuelve a descargar de la API.
+- Índice `comprobante_archivo` (procedimientos `sp_archivo_*` y `sp_comprobantes_*`): tipo, serie,
+  cliente, venta o pedido de origen, tamaño y **huella SHA-256** para verificar que nadie alteró
+  el archivo.
+- Pantalla *Comprobantes* (Administrador y Supervisor): árbol tipo > año > mes > día, búsqueda por
+  cliente o número, estado carpeta/nube por archivo y botón *Verificar*. El Administrador tiene
+  *Sincronizar* (ordena rutas antiguas, restaura desde la nube y sube lo que falte).
+
+**Integración**:
+- `POST /api/integracion/probar` y botón *Probar conexión*: indica si la API del otro grupo está
+  activa (queda en la traza). Si está caída, el maestro sigue funcionando con lo ya importado.
+- Cada lectura correcta deja en la traza la huella SHA-256 de lo recibido.
+
+Variables nuevas: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `COMPROBANTES_BUCKET`.

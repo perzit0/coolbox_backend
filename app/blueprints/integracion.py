@@ -242,6 +242,17 @@ def estado():
     )
 
 
+@bp.post("/integracion/probar")
+@jwt_required()
+def probar():
+    """¿Está activa la API del otro grupo? Una llamada de prueba que queda en la traza."""
+    require_permiso(PERMISO)
+    try:
+        return jsonify(integ.probar_socio())
+    except integ.IntegracionError as exc:
+        raise ApiError("integracion_no_configurada", str(exc), 400) from None
+
+
 @bp.post("/integracion/importar")
 @jwt_required()
 def importar():

@@ -155,6 +155,12 @@ class Config:
     SUNAT_SERIE_NC_FACTURA = _texto("SUNAT_SERIE_NC_FACTURA", "FC01")
     SUNAT_REINTENTOS = _entero("SUNAT_REINTENTOS", 3)
     COMPROBANTES_DIR = _texto("COMPROBANTES_DIR", "comprobantes")
+    # Copia en la nube de la carpeta de comprobantes (Supabase Storage, bucket privado).
+    # El disco de Render se borra en cada despliegue: la nube conserva los archivos y la
+    # carpeta local actúa como caché (si falta un archivo, se vuelve a bajar de la nube).
+    SUPABASE_URL = _texto("SUPABASE_URL")  # https://<proyecto>.supabase.co
+    SUPABASE_SERVICE_KEY = _texto("SUPABASE_SERVICE_KEY")  # clave secreta (service_role)
+    COMPROBANTES_BUCKET = _texto("COMPROBANTES_BUCKET", "comprobantes")
 
     # ------------------------------------------------------------ consulta de DNI / RUC
     # Servicio externo que consulta RENIEC (DNI) y SUNAT (RUC), p. ej. Decolecta.

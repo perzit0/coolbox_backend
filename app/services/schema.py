@@ -57,6 +57,7 @@ def _columnas_nuevas(dialecto):
             "comprobante_api_id": "INTEGER",
             "comprobante_pdf": "VARCHAR(300)",
             "comprobante_xml": "VARCHAR(300)",
+            "comprobante_cdr": "VARCHAR(300)",
             "estado_sunat": "VARCHAR(15) NOT NULL DEFAULT 'pendiente'",
             "sunat_mensaje": "VARCHAR(300)",
             "sunat_intentos": "INTEGER NOT NULL DEFAULT 0",
@@ -69,6 +70,10 @@ def _columnas_nuevas(dialecto):
         "venta_pago": {
             "marca_tarjeta": "VARCHAR(20)",
         },
+        # Constancia de recepción (CDR) de la SUNAT, guardada junto al PDF y el XML
+        "devolucion": {"comprobante_cdr": "VARCHAR(300)"},
+        "pedido_comprobante": {"comprobante_cdr": "VARCHAR(300)"},
+        "pedido_devolucion": {"comprobante_cdr": "VARCHAR(300)"},
         "caja": {
             "conciliacion_json": "TEXT",
             "autorizacion_cierre_id": "INTEGER",

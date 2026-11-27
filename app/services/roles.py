@@ -32,6 +32,11 @@ PERMISOS = [
         "integracion.gestionar",
         "Intercambiar clientes con el grupo pareado por API: importar, revisar la tabla stage y la traza",
     ),
+    ("comprobantes.ver", "Consultar el gestor documental de comprobantes (PDF, XML y CDR por año, mes y día)"),
+    (
+        "comprobantes.gestionar",
+        "Sincronizar la carpeta de comprobantes con la nube y recuperar archivos de la API de facturación",
+    ),
     (
         "caja.autorizar",
         "Autorizar con PIN, en la caja del cajero, acciones restringidas (anulaciones, descuentos, retiros, "
@@ -76,6 +81,8 @@ ROLES = [
             "pedidos.gestionar",
             "clientes.gestionar",
             "integracion.gestionar",
+            "comprobantes.ver",
+            "comprobantes.gestionar",
         ],
     },
     {
@@ -106,6 +113,7 @@ ROLES = [
             "caja.autorizar",
             "pedidos.gestionar",
             "clientes.gestionar",
+            "comprobantes.ver",
         ],
     },
 ]

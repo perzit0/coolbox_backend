@@ -12,7 +12,8 @@
 --   3. Integración de clientes con el grupo pareado (lotes, tabla stage, traza del API)
 --   4. Devolución de pedidos online entregados
 --   5. Triggers (normalización y alimentación automática del maestro)
---   6. Seguridad de Supabase (RLS)
+--   6. Gestor documental de comprobantes (índice de PDF, XML y CDR con huella SHA-256)
+--   7. Seguridad de Supabase (RLS)
 --
 -- En PostgreSQL un procedimiento que devuelve datos se escribe como FUNCTION; los
 -- nombres empiezan con sp_ (stored procedure) y los de triggers con tg_.
@@ -965,7 +966,107 @@ FOR EACH ROW EXECUTE FUNCTION tg_venta_maestro();
 
 
 -- =====================================================================================
--- 6. Seguridad de Supabase
+-- 6. Gestor documental de comprobantes (PDF, XML y CDR de la SUNAT)
+-- =====================================================================================
+
+-- Registra (o actualiza) un archivo guardado en comprobantes/<tipo>/<AAAA>/<MM>/<DD>/.
+-- La ruta es única: volver a guardar el mismo comprobante actualiza su huella y su copia en la nube.
+CREATE FUNCTION sp_archivo_registrar(p_datos jsonb)
+RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_id integer;
+    v_ruta text := sp_texto(p_datos->>'ruta', 300);
+BEGIN
+    IF v_ruta IS NULL OR v_ruta LIKE '%..%' OR left(v_ruta, 1) = '/' THEN
+        PERFORM sp_error('ruta_invalida', 'La ruta del archivo no es válida.', 400);
+    END IF;
+    IF coalesce(p_datos->>'sha256', '') !~ '^[0-9a-f]{64}$' THEN
+        PERFORM sp_error('huella_invalida', 'La huella SHA-256 del archivo no es válida.', 400);
+    END IF;
+    INSERT INTO comprobante_archivo (
+        ruta, tipo, formato, serie, numero, fecha_emision, cliente_documento, cliente_nombre,
+        origen, origen_codigo, bytes, sha256, en_nube, fecha_guardado
+    )
+    VALUES (
+        v_ruta, p_datos->>'tipo', p_datos->>'formato', sp_texto(p_datos->>'serie', 10),
+        sp_texto(p_datos->>'numero', 20), (p_datos->>'fecha_emision')::date,
+        sp_texto(p_datos->>'cliente_documento', 15), sp_texto(p_datos->>'cliente_nombre', 200),
+        sp_texto(p_datos->>'origen', 20), sp_texto(p_datos->>'origen_codigo', 20),
+        coalesce((p_datos->>'bytes')::integer, 0), p_datos->>'sha256',
+        coalesce((p_datos->>'en_nube')::boolean, false), now()
+    )
+    ON CONFLICT (ruta) DO UPDATE SET
+        bytes = EXCLUDED.bytes,
+        sha256 = EXCLUDED.sha256,
+        en_nube = EXCLUDED.en_nube OR comprobante_archivo.en_nube AND comprobante_archivo.sha256 = EXCLUDED.sha256,
+        cliente_documento = coalesce(EXCLUDED.cliente_documento, comprobante_archivo.cliente_documento),
+        cliente_nombre = coalesce(EXCLUDED.cliente_nombre, comprobante_archivo.cliente_nombre),
+        fecha_guardado = now()
+    RETURNING id INTO v_id;
+    RETURN v_id;
+END
+$$;
+
+CREATE FUNCTION sp_archivo_obtener(p_ruta text)
+RETURNS SETOF comprobante_archivo
+LANGUAGE sql STABLE
+AS $$
+    SELECT * FROM comprobante_archivo WHERE ruta = p_ruta
+$$;
+
+CREATE FUNCTION sp_archivo_por_id(p_id integer)
+RETURNS SETOF comprobante_archivo
+LANGUAGE sql STABLE
+AS $$
+    SELECT * FROM comprobante_archivo WHERE id = p_id
+$$;
+
+-- Árbol de carpetas: cuántos comprobantes y archivos hay por año, mes, día y tipo.
+CREATE FUNCTION sp_comprobantes_arbol()
+RETURNS TABLE (anio integer, mes integer, dia integer, tipo text, comprobantes integer, archivos integer,
+               bytes bigint, en_nube integer)
+LANGUAGE sql STABLE
+AS $$
+    SELECT extract(year FROM fecha_emision)::integer, extract(month FROM fecha_emision)::integer,
+           extract(day FROM fecha_emision)::integer, tipo::text,
+           count(DISTINCT coalesce(serie || '-' || numero, ruta))::integer, count(*)::integer,
+           coalesce(sum(a.bytes), 0)::bigint, count(*) FILTER (WHERE a.en_nube)::integer
+    FROM comprobante_archivo a
+    GROUP BY 1, 2, 3, 4
+    ORDER BY 1 DESC, 2 DESC, 3 DESC, 4
+$$;
+
+-- Archivos de un rango de fechas, con filtro por tipo y por cliente (documento o nombre) o número.
+CREATE FUNCTION sp_comprobantes_listar(p_desde date, p_hasta date, p_tipo text, p_texto text)
+RETURNS SETOF comprobante_archivo
+LANGUAGE sql STABLE
+AS $$
+    SELECT * FROM comprobante_archivo
+    WHERE (p_desde IS NULL OR fecha_emision >= p_desde)
+      AND (p_hasta IS NULL OR fecha_emision <= p_hasta)
+      AND (sp_texto(p_tipo, 15) IS NULL OR tipo = p_tipo)
+      AND (sp_texto(p_texto, 80) IS NULL
+           OR cliente_documento ILIKE '%' || p_texto || '%'
+           OR cliente_nombre ILIKE '%' || p_texto || '%'
+           OR (serie || '-' || numero) ILIKE '%' || p_texto || '%'
+           OR origen_codigo ILIKE '%' || p_texto || '%')
+    ORDER BY fecha_emision DESC, serie, numero, formato
+    LIMIT 600
+$$;
+
+-- Marca un archivo como copiado a la nube (sincronización posterior).
+CREATE FUNCTION sp_archivo_nube(p_ruta text)
+RETURNS void
+LANGUAGE sql
+AS $$
+    UPDATE comprobante_archivo SET en_nube = true WHERE ruta = p_ruta
+$$;
+
+
+-- =====================================================================================
+-- 7. Seguridad de Supabase
 -- =====================================================================================
 
 -- Supabase publica las tablas de "public" en su API REST. Con RLS activo y sin políticas

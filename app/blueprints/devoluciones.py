@@ -21,7 +21,7 @@ from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from uuid import uuid4
 
-from flask import Blueprint, current_app, jsonify, request, send_file
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
@@ -216,11 +216,7 @@ def reintentar_nota(devolucion_id):
 @bp.get("/devoluciones/<int:devolucion_id>/comprobante/<formato>")
 @jwt_required()
 def descargar_nota(devolucion_id, formato):
-    """PDF o XML de la nota de crédito guardado localmente (no consulta la API)."""
+    """PDF, XML o CDR de la nota de crédito guardado en el gestor documental."""
     require_permiso("ventas.ver")
     devolucion = db.get_or_404(Devolucion, devolucion_id)
-    ruta = devolucion.comprobante_pdf if formato == "pdf" else devolucion.comprobante_xml if formato == "xml" else None
-    archivo = sunat_svc.archivo_local(ruta)
-    if not archivo:
-        raise ApiError("comprobante_no_disponible", "La nota de crédito aún no está disponible.", 404)
-    return send_file(archivo, as_attachment=False)
+    return sunat_svc.entregar(devolucion, "nota_credito", formato, "La nota de crédito aún no está disponible.")

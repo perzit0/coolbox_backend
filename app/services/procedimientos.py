@@ -22,6 +22,12 @@ from ..extensions import db
 PERMITIDOS = frozenset(
     {
         "sp_cliente_registrar",
+        "sp_archivo_registrar",
+        "sp_archivo_obtener",
+        "sp_archivo_por_id",
+        "sp_archivo_nube",
+        "sp_comprobantes_arbol",
+        "sp_comprobantes_listar",
         "sp_cliente_guardar",
         "sp_cliente_estado",
         "sp_cliente_obtener",

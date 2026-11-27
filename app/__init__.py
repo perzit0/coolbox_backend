@@ -36,6 +36,7 @@ def create_app(config_object="config.Config"):
         supports_credentials=False,
         allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Accept"],
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        expose_headers=["Content-Disposition"],  # nombre de archivo de las descargas (CDR)
     )
 
     def _origen_permitido(origin):
@@ -115,6 +116,7 @@ def create_app(config_object="config.Config"):
     from .blueprints.devoluciones import bp as devoluciones_bp
     from .blueprints.maestro_clientes import bp as maestro_clientes_bp
     from .blueprints.integracion import bp as integracion_bp
+    from .blueprints.comprobantes import bp as comprobantes_bp
 
     for blueprint in (
         auth_bp,
@@ -131,6 +133,7 @@ def create_app(config_object="config.Config"):
         devoluciones_bp,
         maestro_clientes_bp,
         integracion_bp,
+        comprobantes_bp,
     ):
         app.register_blueprint(blueprint, url_prefix="/api")
 

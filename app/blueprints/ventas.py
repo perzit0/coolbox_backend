@@ -22,7 +22,7 @@ from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
-from flask import Blueprint, current_app, jsonify, request, send_file
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
@@ -464,14 +464,10 @@ def reintentar_comprobante(venta_id):
 @bp.get("/ventas/<int:venta_id>/comprobante/<formato>")
 @jwt_required()
 def descargar_comprobante(venta_id, formato):
-    """Entrega el PDF o XML guardado localmente (no vuelve a consultar la API)."""
+    """PDF, XML o CDR guardado en el gestor documental (no vuelve a consultar la API)."""
     require_permiso("ventas.ver")
     venta = db.get_or_404(Venta, venta_id)
-    ruta = venta.comprobante_pdf if formato == "pdf" else venta.comprobante_xml if formato == "xml" else None
-    archivo = sunat_svc.archivo_local(ruta)
-    if not archivo:
-        raise ApiError("comprobante_no_disponible", "El comprobante aún no está disponible.", 404)
-    return send_file(archivo, as_attachment=False)
+    return sunat_svc.entregar(venta, venta.tipo_comprobante or sunat_svc.tipo_para(venta.cliente_documento), formato)
 
 
 @bp.post("/ventas/<int:venta_id>/anular")
