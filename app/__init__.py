@@ -180,6 +180,15 @@ def create_app(config_object="config.Config"):
     def health():
         return {"status": "ok"}
 
+    @app.get("/api/despertar")
+    @limiter.limit("20 per minute")
+    def despertar():
+        """Al abrir el sistema o la tienda: despierta la API de facturación sin enviarle datos."""
+        from .services.despertar import despertar as avisar
+
+        avisar(app.config)
+        return {"status": "ok"}, 202
+
     @app.get("/health/db")
     def health_db():
         """Verifica la conexión con la base de datos (útil para diagnosticar Render/Supabase)."""
