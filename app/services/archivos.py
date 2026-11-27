@@ -60,11 +60,12 @@ def huella(contenido):
 
 
 def ruta_relativa(tipo, fecha, serie, numero, formato, respaldo):
-    """<tipo>/<AAAA>/<MM>/<DD>/<serie-numero>[-CDR].<ext> con la fecha local de emisión."""
+    """<tipo>/<AAAA>/<MM>/<DD>/<serie-numero>/<serie-numero>[-CDR].<ext> con la fecha local de
+    emisión: cada comprobante tiene su propia carpeta con su PDF, XML y CDR juntos."""
     local = a_local(fecha)
     nombre = re.sub(r"[^A-Za-z0-9_-]", "", f"{serie}-{numero}") or re.sub(r"[^A-Za-z0-9_-]", "", respaldo or "doc")
     sufijo = "-CDR" if formato == "cdr" else ""
-    return f"{CARPETAS[tipo]}/{local:%Y}/{local:%m}/{local:%d}/{nombre}{sufijo}.{EXTENSION[formato]}"
+    return f"{CARPETAS[tipo]}/{local:%Y}/{local:%m}/{local:%d}/{nombre}/{nombre}{sufijo}.{EXTENSION[formato]}"
 
 
 def _dentro(path):
@@ -150,6 +151,38 @@ def bajar(ruta):
     except requests.RequestException as exc:
         log.warning("Nube: no se bajó %s: %s", ruta, exc)
         return None
+
+
+def borrar_nube(ruta):
+    if not nube_activa():
+        return False
+    try:
+        bucket = _cfg("COMPROBANTES_BUCKET") or "comprobantes"
+        resp = requests.delete(_url_nube(f"/object/{bucket}/{quote(ruta)}"), headers=_cabeceras_nube(), timeout=30)
+        return resp.status_code < 300
+    except requests.RequestException as exc:
+        log.warning("Nube: no se borró %s: %s", ruta, exc)
+        return False
+
+
+def borrar(ruta):
+    """Quita un archivo equivocado de la carpeta, de la nube y del índice."""
+    local = resolver(ruta)
+    if local:
+        local.unlink(missing_ok=True)
+    borrar_nube(ruta)
+    if sp.disponibles():
+        sp.valor("sp_archivo_borrar", ruta)
+
+
+def contiene_documento(ruta, serie, numero):
+    """¿El XML guardado es realmente de serie-numero? (revisa su <cbc:ID>)."""
+    archivo = obtener(ruta)
+    if not archivo:
+        return None
+    texto = archivo.read_bytes()[:200_000].decode("utf-8", "ignore")
+    ids = re.findall(r"<cbc:ID>\s*([A-Z0-9]{4})-0*(\d+)\s*</cbc:ID>", texto)
+    return any(s == serie and n == str(numero or "").lstrip("0") for s, n in ids) if ids else None
 
 
 # ------------------------------------------------------------------ guardar y obtener

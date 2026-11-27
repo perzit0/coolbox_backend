@@ -26,6 +26,7 @@ PERMITIDOS = frozenset(
         "sp_archivo_obtener",
         "sp_archivo_por_id",
         "sp_archivo_nube",
+        "sp_archivo_borrar",
         "sp_respaldo_archivos",
         "sp_respaldo_latido",
         "sp_respaldo_equipos",

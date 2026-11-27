@@ -2,12 +2,14 @@
   COOLBOX - Respaldo local de comprobantes electronicos.
 
   Copia a esta PC todos los PDF, XML y CDR, en carpetas por tipo, anio, mes y dia:
-      C:\COOLBOX\comprobantes\boletas\2026\11\27\B001-000045.pdf
+      C:\COOLBOX\comprobantes\boletas\2026\11\27\B001-000045\B001-000045.pdf
   Asi, aunque falle el servidor o la nube, siempre hay una copia local.
 
   - Solo descarga lo que falta (o lo que cambio de tamanio).
   - Verifica la huella SHA-256 de cada archivo antes de guardarlo.
   - Avisa al sistema cuantos archivos tiene (pantalla Comprobantes > Respaldo local).
+  - Los archivos que ya no figuran en el sistema (estructura anterior o archivos equivocados)
+    se mueven a _retirados\ (nunca se borran).
   - -Verificar recalcula la huella de todos los archivos locales y repone los alterados.
 
   Compatible con Windows PowerShell 5.1. La configuracion (URL, clave y carpeta) esta en
@@ -59,6 +61,7 @@ function Llamar([string]$url) {
 
 function Huella([string]$ruta) { (Get-FileHash -Path $ruta -Algorithm SHA256).Hash.ToLowerInvariant() }
 
+$enIndice = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 $total = 0; $tiene = 0; $bytes = [int64]0; $descargados = 0; $pendientes = 0; $errores = 0; $alterados = 0
 $inicio = Get-Date
 try {
@@ -75,6 +78,7 @@ try {
             }
             $destino = $Carpeta
             foreach ($parte in $ruta.Split('/')) { $destino = Join-Path $destino $parte }
+            [void]$enIndice.Add([IO.Path]::GetFullPath($destino))
 
             $falta = -not (Test-Path -LiteralPath $destino)
             if (-not $falta) {
@@ -108,6 +112,27 @@ try {
         }
         $desde = $pagina.siguiente
     } while ($desde)
+
+    # Lo que ya no figura en el sistema pasa a _retirados (solo si el indice respondio con datos)
+    $retirados = 0
+    if ($total -gt 0) {
+        $papelera = Join-Path (Join-Path $Carpeta '_retirados') (Get-Date -Format 'yyyy-MM-dd')
+        $raiz = [IO.Path]::GetFullPath($Carpeta).TrimEnd('\', '/')
+        Get-ChildItem -LiteralPath $Carpeta -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+            $completo = $_.FullName
+            $relativo = $completo.Substring($raiz.Length).TrimStart('\', '/')
+            if ($relativo -like '_retirados*' -or $completo -like '*.descarga' -or $enIndice.Contains($completo)) { return }
+            $nuevo = Join-Path $papelera $relativo
+            New-Item -ItemType Directory -Force -Path (Split-Path $nuevo -Parent) | Out-Null
+            Move-Item -LiteralPath $completo -Destination $nuevo -Force
+            $retirados++
+        }
+        # Carpetas que quedaron vacias
+        Get-ChildItem -LiteralPath $Carpeta -Recurse -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notlike '*_retirados*' } | Sort-Object { $_.FullName.Length } -Descending |
+            ForEach-Object { if (-not (Get-ChildItem -LiteralPath $_.FullName -Force)) { Remove-Item -LiteralPath $_.FullName -Force } }
+        if ($retirados) { Escribir "$retirados archivos que ya no figuran en el sistema se movieron a _retirados" }
+    }
 
     $cuerpo = @{
         equipo = [Environment]::MachineName; carpeta = $Carpeta; archivos = $tiene; bytes = $bytes

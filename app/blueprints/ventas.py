@@ -455,7 +455,7 @@ def reintentar_comprobante(venta_id):
     """Reintenta la emisión del comprobante de una venta pendiente o con error."""
     require_permiso("caja.operar")
     venta = db.get_or_404(Venta, venta_id)
-    if venta.estado_sunat == "aceptado":
+    if venta.estado_sunat in ("aceptado", "no_aplica"):
         return jsonify(venta=venta.to_dict())
     sunat_svc.emitir(venta)
     db.session.commit()

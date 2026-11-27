@@ -1277,6 +1277,14 @@ AS $$
     UPDATE comprobante_archivo SET en_nube = true WHERE ruta = p_ruta
 $$;
 
+-- Quita del índice un archivo que no correspondía a su comprobante.
+CREATE FUNCTION sp_archivo_borrar(p_ruta text)
+RETURNS void
+LANGUAGE sql
+AS $$
+    DELETE FROM comprobante_archivo WHERE ruta = p_ruta
+$$;
+
 
 -- =====================================================================================
 -- 7. Seguridad de Supabase

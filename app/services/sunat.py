@@ -8,7 +8,7 @@ Flujo por documento (requerimiento del profesor):
   3. POST /{id}/send-sunat                     -> firma y envía a la SUNAT (entorno beta).
   4. POST /{id}/generate-pdf                   -> genera el PDF.
   5. GET  /{id}/download-pdf | -xml | -cdr     -> PDF, XML firmado y CDR (constancia de la SUNAT)
-     se guardan en comprobantes/<tipo>/<AAAA>/<MM>/<DD>/ y en la nube (ver services/archivos.py).
+     se guardan en comprobantes/<tipo>/<AAAA>/<MM>/<DD>/<serie-numero>/ y en la nube (ver services/archivos.py).
 La ruta de los archivos queda en la base de datos y las consultas posteriores leen el archivo local;
 si se perdió, se recupera de la nube y, como último recurso, se vuelve a descargar de la API.
 
@@ -338,10 +338,33 @@ def _meta(doc, documento):
 MAX_ARCHIVO = 15 * 1024 * 1024  # un PDF/XML/CDR de comprobante pesa KB, no decenas de MB
 
 
+def _mismo_numero(a, b):
+    return str(a or "").lstrip("0") == str(b or "").lstrip("0")
+
+
+def _verificar_identidad(base_url, doc, headers, timeout):
+    """El id interno de la API debe corresponder a ESTE comprobante. Si se cambió de instalación
+    (por ejemplo, de la PC a la nube), el mismo id puede ser otro comprobante: no se baja nada."""
+    if not doc.comprobante_serie:
+        return
+    resp = requests.get(base_url, headers=headers, timeout=timeout)
+    if resp.status_code == 404:
+        raise SunatError("El comprobante no está en la API de facturación actual (se emitió con otra instalación).")
+    resp.raise_for_status()
+    datos = (resp.json() or {}).get("data") or {}
+    serie, numero = datos.get("serie"), datos.get("correlativo") or datos.get("numero")
+    if serie and (serie != doc.comprobante_serie or not _mismo_numero(numero, doc.comprobante_numero)):
+        raise SunatError(
+            f"La API de facturación actual tiene otro comprobante ({serie}-{numero}) con ese id: "
+            f"{doc.comprobante_serie}-{doc.comprobante_numero} se emitió con otra instalación."
+        )
+
+
 def _guardar(doc, documento, ruta, headers):
     """Descarga PDF, XML y CDR y los guarda en el gestor documental. Devuelve el mensaje de la CDR."""
     base_url = _url(f"{ruta}/{doc.comprobante_api_id}")
     timeout = _cfg("SUNAT_TIMEOUT", 30)
+    _verificar_identidad(base_url, doc, headers, timeout)
     requests.post(base_url + "/generate-pdf", headers=headers, timeout=timeout).raise_for_status()
     meta = _meta(doc, documento)
     mensaje_cdr = None
@@ -418,9 +441,27 @@ def _emitir(doc, documento, armar_cuerpo):
     return doc
 
 
+MENSAJE_NO_APLICA = (
+    "Venta sin DNI ni RUC por más de S/ 700 (registrada antes de pedir el documento): "
+    "la SUNAT exige identificar al cliente, así que queda solo como comprobante interno."
+)
+
+
+def no_emitible(venta):
+    """Ventas antiguas sin documento que la SUNAT no acepta (factura o boleta > S/ 700)."""
+    sin_documento = not (venta.cliente_documento or "").strip()
+    return sin_documento and (
+        venta.tipo_comprobante == "factura" or Decimal(str(venta.total)) > MONTO_BOLETA_SIN_DOCUMENTO
+    )
+
+
 def emitir(venta):
     """Boleta o factura de una venta."""
     venta.tipo_comprobante = venta.tipo_comprobante or tipo_para(venta.cliente_documento)
+    if no_emitible(venta):
+        # No se envía a la API: deja de figurar como pendiente y ya no se reintenta.
+        venta.estado_sunat, venta.sunat_mensaje = "no_aplica", MENSAJE_NO_APLICA
+        return venta
     return _emitir(venta, venta.tipo_comprobante, lambda: _cuerpo_comprobante(venta))
 
 

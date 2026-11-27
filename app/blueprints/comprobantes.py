@@ -172,16 +172,42 @@ def sincronizar():
     - archivo indexado pero sin copia en la nube -> se sube."""
     require_permiso(PERMISO_GESTIONAR)
     sp.exigir()
-    resultado = {"revisados": 0, "reorganizados": 0, "desde_nube": 0, "recuperados": 0, "subidos": 0, "pendientes": 0}
+    resultado = {
+        "revisados": 0, "reorganizados": 0, "desde_nube": 0, "recuperados": 0,
+        "subidos": 0, "pendientes": 0, "corregidos": 0, "sin_archivos": [],
+    }
     for doc, documento in _documentos():
         if resultado["recuperados"] + resultado["reorganizados"] >= LIMITE_SINCRONIZACION:
             resultado["pendientes"] += 1
             continue
         resultado["revisados"] += 1
+        # Archivos de OTRO comprobante (bajados con un id de otra instalación de la API): se quitan
+        xml = doc.comprobante_xml
+        if xml and sp.fila("sp_archivo_obtener", xml) and archivos.contiene_documento(
+            xml, doc.comprobante_serie, doc.comprobante_numero
+        ) is False:
+            for columna, _ in sunat_svc.FORMATOS.values():
+                if getattr(doc, columna):
+                    archivos.borrar(getattr(doc, columna))
+                    setattr(doc, columna, None)
+            db.session.commit()
+            resultado["corregidos"] += 1
         meta = sunat_svc._meta(doc, documento)
         faltan = False
         for formato, (columna, obligatorio) in sunat_svc.FORMATOS.items():
             ruta = getattr(doc, columna)
+            esperada = archivos.ruta_relativa(
+                documento, doc.fecha, doc.comprobante_serie, doc.comprobante_numero, formato, doc.codigo
+            )
+            if ruta and ruta != esperada and sp.fila("sp_archivo_obtener", ruta):
+                # Estructura anterior (archivos sueltos en el día): pasa a su carpeta propia
+                actual = archivos.obtener(ruta)
+                if actual:
+                    archivos.guardar(esperada, actual.read_bytes(), formato, meta)
+                    archivos.borrar(ruta)
+                    setattr(doc, columna, esperada)
+                    resultado["reorganizados"] += 1
+                    continue
             if ruta and sp.fila("sp_archivo_obtener", ruta):
                 if archivos.resolver(ruta):
                     continue
@@ -201,8 +227,11 @@ def sincronizar():
             elif obligatorio or ruta:
                 faltan = True
         db.session.commit()
-        if faltan and sunat_svc._recuperar(doc, documento):
-            resultado["recuperados"] += 1
+        if faltan:
+            if sunat_svc._recuperar(doc, documento):
+                resultado["recuperados"] += 1
+            else:
+                resultado["sin_archivos"].append(f"{doc.comprobante_serie}-{doc.comprobante_numero}")
     if archivos.nube_activa():
         for f in sp.filas("sp_comprobantes_listar", None, None, None, None):
             local = None if f["en_nube"] else archivos.resolver(f["ruta"])

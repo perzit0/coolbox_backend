@@ -403,7 +403,7 @@ class Venta(db.Model):
     comprobante_pdf = db.Column(db.String(300))  # ruta relativa del PDF guardado
     comprobante_xml = db.Column(db.String(300))  # ruta relativa del XML guardado
     comprobante_cdr = db.Column(db.String(300))  # constancia de recepción de la SUNAT (zip)
-    estado_sunat = db.Column(db.String(15), nullable=False, default="pendiente")  # pendiente | aceptado | error
+    estado_sunat = db.Column(db.String(15), nullable=False, default="pendiente")  # pendiente | aceptado | error | no_aplica
     sunat_mensaje = db.Column(db.String(300))
     sunat_intentos = db.Column(db.Integer, nullable=False, default=0)
 
