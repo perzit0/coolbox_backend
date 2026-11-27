@@ -8,6 +8,7 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
+from ..services.seguridad import patron_like
 from ..extensions import db
 from ..models import Familia, Marca, MovimientoStock, Producto, Subfamilia
 from ..services.catalogo import siguiente_sku
@@ -36,7 +37,7 @@ def _validar_imagen(valor):
         try:
             datos = base64.b64decode(coincide.group(2), validate=True)
         except (binascii.Error, ValueError):
-            raise ApiError("imagen_invalida", "El archivo de imagen está dañado.", 400)
+            raise ApiError("imagen_invalida", "El archivo de imagen está dañado.", 400) from None
         maximo_kb = current_app.config.get("IMAGEN_MAX_KB", 1100)
         if len(datos) > maximo_kb * 1024:
             raise ApiError("imagen_muy_grande", f"La imagen es demasiado pesada (máximo {maximo_kb} KB).", 400)
@@ -48,7 +49,7 @@ def _numero(data, campo, tipo, minimo=0, etiqueta=None):
     try:
         valor = tipo(data[campo])
     except (TypeError, ValueError, KeyError):
-        raise ApiError("datos_invalidos", f"El campo '{etiqueta or campo}' debe ser numérico.", 400)
+        raise ApiError("datos_invalidos", f"El campo '{etiqueta or campo}' debe ser numérico.", 400) from None
     if valor < minimo:
         raise ApiError("valor_invalido", f"El campo '{etiqueta or campo}' no puede ser menor que {minimo}.", 400)
     return valor
@@ -71,7 +72,7 @@ def _calcular_sku(subfamilia, marca):
     try:
         return siguiente_sku(familia, subfamilia, marca, existentes)
     except ValueError as exc:
-        raise ApiError("sku_agotado", str(exc), 409)
+        raise ApiError("sku_agotado", str(exc), 409) from None
 
 
 # ---------------------------------------------------------------- catálogo base
@@ -150,7 +151,7 @@ def listar_productos():
     elif estado_stock == "bajo":
         query = query.filter(Producto.stock <= Producto.stock_minimo)
     if q:
-        like = f"%{q}%"
+        like = patron_like(q)
         query = query.filter(
             db.or_(
                 Producto.nombre.ilike(like),

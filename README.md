@@ -263,3 +263,21 @@ estructurada y lee de ahí" y "mantengan la trazabilidad del API, no solo el cas
 - Cada lectura correcta deja en la traza la huella SHA-256 de lo recibido.
 
 Variables nuevas: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `COMPROBANTES_BUCKET`.
+
+## Novedades v5.2 — Auditoría de seguridad y optimización
+
+- **Dependencias sin vulnerabilidades conocidas**: Flask 3.1.3, Flask-Cors 6.0.5, requests 2.34.2,
+  Flask-JWT-Extended 4.7.4, python-dotenv 1.2.4 (`pip-audit` limpio). Frontends: Vite 6.4,
+  React Router 7.18 (`npm audit`: 0 vulnerabilidades).
+- **Sesiones**: al cambiar o resetear la contraseña, los tokens anteriores dejan de valer
+  (claim `sv`); quien hizo el cambio recibe un token nuevo y las demás sesiones se cierran.
+- **Login con Google**: se valida también el emisor (`iss`) y que vengan `email` y `sub`.
+- **Búsquedas**: los comodines `%` y `_` se escapan (`patron_like` en Python y `sp_like` en SQL).
+- **Archivos externos**: límite de tamaño para PDF/XML/CDR (15 MB) y para la respuesta del otro
+  grupo (`INTEGRACION_MAX_MB`); la lectura de la CDR ignora entradas gigantes (zip bomb).
+- **Mensajes**: si la API de facturación falla, el usuario ve un mensaje claro (sin hosts ni
+  trazas internas); el detalle queda en el log. Reintentos con espera creciente (`SUNAT_ESPERA`).
+- **Excepciones**: `raise ... from None` en validaciones (sin trazas encadenadas).
+- **Frontends**: cabeceras de seguridad en Vercel (nosniff, X-Frame-Options, HSTS, Referrer y
+  Permissions-Policy); los XML se abren como texto plano (no pueden ejecutar scripts); carga
+  diferida de pantallas (bundle inicial 413 KB → 225 KB).

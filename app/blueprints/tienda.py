@@ -16,15 +16,13 @@ Pedidos (recojo en sede):
     GET  /api/tienda/pedidos/<codigo>?email= -> seguimiento
 """
 
-import json
 import math
 import re
 import secrets
-import urllib.parse
-import urllib.request
 from datetime import timedelta
 from decimal import Decimal
 
+import requests
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import create_access_token, get_jwt, get_jwt_identity, jwt_required, verify_jwt_in_request
 from sqlalchemy import func
@@ -32,6 +30,7 @@ from sqlalchemy.orm import joinedload
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from ..errors import ApiError
+from ..services.seguridad import patron_like
 from ..extensions import db, limiter
 from ..models import (
     Cliente,
@@ -272,7 +271,7 @@ def _lineas(items, bloquear=False):
             pid = int(it.get("producto_id"))
             q = int(it.get("cantidad") or 0)
         except (TypeError, ValueError, AttributeError):
-            raise ApiError("carrito_invalido", "El carrito tiene datos no válidos.", 400)
+            raise ApiError("carrito_invalido", "El carrito tiene datos no válidos.", 400) from None
         if q > 0:
             cantidades[pid] = min(cantidades.get(pid, 0) + q, 20)
     q = Producto.query.filter(Producto.id.in_(cantidades.keys()))
@@ -405,7 +404,7 @@ def buscar():
     texto = (request.args.get("q") or "").strip()
     if texto:
         for palabra in texto.split()[:5]:
-            like = f"%{palabra}%"
+            like = patron_like(palabra)
             q = q.filter(
                 db.or_(
                     Producto.nombre.ilike(like),
@@ -567,13 +566,21 @@ def login_google():
     if not client_id:
         raise ApiError("google_no_configurado", "El ingreso con Google no está habilitado.", 503)
     credencial = (request.get_json(silent=True) or {}).get("credential") or ""
+    if not credencial or len(credencial) > 4096:
+        raise ApiError("google_invalido", "No se pudo validar tu cuenta de Google.", 401)
     try:
-        url = current_app.config["GOOGLE_TOKENINFO_URL"] + "?" + urllib.parse.urlencode({"id_token": credencial})
-        with urllib.request.urlopen(url, timeout=10) as r:
-            info = json.loads(r.read().decode())
-    except Exception:
-        raise ApiError("google_invalido", "No se pudo validar tu cuenta de Google. Intenta de nuevo.", 401)
-    if info.get("aud") != client_id or info.get("email_verified") not in ("true", True):
+        r = requests.get(current_app.config["GOOGLE_TOKENINFO_URL"], params={"id_token": credencial}, timeout=10)
+        r.raise_for_status()
+        info = r.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise ApiError("google_invalido", "No se pudo validar tu cuenta de Google. Intenta de nuevo.", 401) from exc
+    if (
+        info.get("aud") != client_id
+        or info.get("iss") not in ("accounts.google.com", "https://accounts.google.com")
+        or info.get("email_verified") not in ("true", True)
+        or not info.get("email")
+        or not info.get("sub")
+    ):
         raise ApiError("google_invalido", "No se pudo validar tu cuenta de Google.", 401)
     email = info["email"].lower()
     cliente = Cliente.query.filter_by(google_sub=info["sub"]).first() or Cliente.query.filter_by(email=email).first()
@@ -616,7 +623,7 @@ def enviar_codigo():
         )
     except Exception as exc:
         current_app.logger.warning("No se pudo enviar el código: %s", exc)
-        raise ApiError("correo_fallo", "No pudimos enviar el correo. Intenta de nuevo.", 502)
+        raise ApiError("correo_fallo", "No pudimos enviar el correo. Intenta de nuevo.", 502) from None
     return jsonify(enviado=True, mensaje=f"Enviamos un código de 6 dígitos a {email}.")
 
 

@@ -133,7 +133,7 @@ def exportar():
         try:
             desde = datetime.fromisoformat(request.args["desde"].replace("Z", "+00:00"))
         except ValueError:
-            raise ApiError("fecha_invalida", "El parámetro desde debe ser una fecha ISO-8601.", 400)
+            raise ApiError("fecha_invalida", "El parámetro desde debe ser una fecha ISO-8601.", 400) from None
     filas = sp.filas("sp_clientes_exportar", desde, por_pagina, (pagina - 1) * por_pagina)
     total = filas[0]["total"] if filas else 0
     paginas = ceil(total / por_pagina) if total else 0

@@ -25,7 +25,7 @@ def calcular_conteo(conteo):
         try:
             cantidad = int(valor)
         except (TypeError, ValueError):
-            raise ApiError("conteo_invalido", f"La cantidad para S/ {den} debe ser un número entero.", 400)
+            raise ApiError("conteo_invalido", f"La cantidad para S/ {den} debe ser un número entero.", 400) from None
         if cantidad < 0 or cantidad > 10000:
             raise ApiError("conteo_invalido", f"La cantidad para S/ {den} no es válida.", 400)
         if cantidad:

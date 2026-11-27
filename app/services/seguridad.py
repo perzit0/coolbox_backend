@@ -47,3 +47,10 @@ def generar_password_temporal(n=12):
 
 def duracion_bloqueo():
     return timedelta(minutes=minutos_bloqueo())
+
+
+def patron_like(texto, maximo=100):
+    """Patrón %texto% para ILIKE con los comodines escapados (PostgreSQL usa \\ como escape)."""
+    limpio = (texto or "").strip()[:maximo]
+    limpio = limpio.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{limpio}%"

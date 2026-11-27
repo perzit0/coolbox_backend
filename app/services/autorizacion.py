@@ -95,7 +95,7 @@ def _monto(valor):
     try:
         return Decimal(str(valor)).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError):
-        raise ApiError("monto_invalido", "El monto de la autorización no es válido.", 400)
+        raise ApiError("monto_invalido", "El monto de la autorización no es válido.", 400) from None
 
 
 def solicitar(solicitante, caja, data):
@@ -113,7 +113,7 @@ def solicitar(solicitante, caja, data):
     try:
         supervisor_id = int(data.get("supervisor_id"))
     except (TypeError, ValueError):
-        raise ApiError("supervisor_requerido", "Seleccione al supervisor que autoriza.", 400)
+        raise ApiError("supervisor_requerido", "Seleccione al supervisor que autoriza.", 400) from None
     supervisor = Usuario.query.filter_by(id=supervisor_id).with_for_update().first()
     if not supervisor or supervisor.estado != "activo" or not supervisor.puede_autorizar:
         raise ApiError("supervisor_invalido", "El usuario seleccionado no puede autorizar.", 403)
@@ -130,7 +130,7 @@ def solicitar(solicitante, caja, data):
     try:
         venta_id = int(venta_id) if venta_id not in (None, "") else None
     except (TypeError, ValueError):
-        raise ApiError("venta_invalida", "La venta indicada no es válida.", 400)
+        raise ApiError("venta_invalida", "La venta indicada no es válida.", 400) from None
 
     registro = Autorizacion(
         accion=accion,

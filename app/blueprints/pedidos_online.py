@@ -25,6 +25,7 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
+from ..services.seguridad import patron_like
 from ..extensions import db
 from ..models import Pedido, PedidoComprobante, PedidoDevolucion, Sede, ahora
 from ..services import procedimientos as sp
@@ -73,7 +74,7 @@ def listar():
         q = q.filter(Pedido.sede_id == request.args.get("sede", type=int))
     texto = (request.args.get("q") or "").strip()
     if texto:
-        like = f"%{texto}%"
+        like = patron_like(texto)
         q = q.filter(
             db.or_(
                 Pedido.codigo.ilike(like),

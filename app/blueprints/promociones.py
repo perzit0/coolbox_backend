@@ -12,6 +12,7 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
+from ..services.seguridad import patron_like
 from ..extensions import db
 from ..models import Familia, Marca, Producto, Promocion, PromocionProducto
 from ..services import promociones as svc
@@ -122,7 +123,7 @@ def buscar_productos():
     q = (request.args.get("q") or "").strip()
     consulta = Producto.query.filter(Producto.activo.is_(True))
     if q:
-        like = f"%{q}%"
+        like = patron_like(q)
         consulta = consulta.filter(
             db.or_(Producto.nombre.ilike(like), Producto.sku.ilike(like), Producto.codigo.ilike(like))
         )

@@ -87,7 +87,7 @@ def _ejecutar(consulta, sesion):
             estado = int(diag.message_hint) if (diag.message_hint or "").isdigit() else 409
             raise ApiError(
                 diag.message_primary or "error_negocio", diag.message_detail or "Operación no válida.", estado
-            )
+            ) from None
         raise
 
 

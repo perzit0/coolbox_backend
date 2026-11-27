@@ -38,7 +38,7 @@ def _monto(valor, campo):
     try:
         monto = Decimal(str(valor)).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError, TypeError):
-        raise ApiError("monto_invalido", f"El {campo} debe ser un número.", 400)
+        raise ApiError("monto_invalido", f"El {campo} debe ser un número.", 400) from None
     if monto < 0:
         raise ApiError("monto_invalido", f"El {campo} no puede ser negativo.", 400)
     return monto

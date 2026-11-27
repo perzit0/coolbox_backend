@@ -325,7 +325,7 @@ def _login_socio():
         )
     except requests.RequestException as exc:
         trazar("salida", socio()["nombre"], "POST", url, None, False, mensaje=f"Login sin respuesta: {exc}")
-        raise IntegracionError("La API del otro grupo no respondió al iniciar sesión.")
+        raise IntegracionError("La API del otro grupo no respondió al iniciar sesión.") from None
     ms = int((time.monotonic() - inicio) * 1000)
     datos = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
     token = None
@@ -369,6 +369,12 @@ def _get_con_reintentos(url, cabeceras, lote_id):
             resp = requests.get(url, headers=cabeceras, timeout=_cfg("INTEGRACION_TIMEOUT", 20))
             ms = int((time.monotonic() - inicio) * 1000)
             if resp.status_code == 200:
+                if len(resp.content) > int(_cfg("INTEGRACION_MAX_MB", 5)) * 1024 * 1024:
+                    trazar(
+                        "salida", nombre, "GET", url, 200, False, intento, ms,
+                        mensaje="Respuesta demasiado grande", lote_id=lote_id,
+                    )
+                    raise IntegracionError("La respuesta de la API del otro grupo supera el tamaño permitido.", intento)
                 try:
                     cuerpo = resp.json()
                 except ValueError:
@@ -384,7 +390,7 @@ def _get_con_reintentos(url, cabeceras, lote_id):
                         mensaje="Respuesta no es JSON",
                         lote_id=lote_id,
                     )
-                    raise IntegracionError("La API del otro grupo no respondió en formato JSON.", intento)
+                    raise IntegracionError("La API del otro grupo no respondió en formato JSON.", intento) from None
                 cantidad = len(extraer_registros(cuerpo))
                 # Huella SHA-256 de lo recibido: permite demostrar después qué datos llegaron en esa llamada.
                 mensaje = f"Correcto · SHA-256 {sha256(resp.content).hexdigest()[:16]}"

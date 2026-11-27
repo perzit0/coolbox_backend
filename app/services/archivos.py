@@ -44,6 +44,9 @@ MIME = {"pdf": "application/pdf", "xml": "application/xml", "cdr": "application/
 _buckets_listos = set()
 
 
+MAX_XML_CDR = 2 * 1024 * 1024
+
+
 def _cfg(clave, defecto=""):
     return current_app.config.get(clave, defecto)
 
@@ -218,8 +221,13 @@ def leer_cdr(contenido):
     """Código y descripción de la respuesta de la SUNAT dentro de la CDR (R-*.xml)."""
     try:
         with zipfile.ZipFile(io.BytesIO(contenido)) as zf:
-            xml = next((zf.read(n) for n in zf.namelist() if n.lower().endswith(".xml")), b"").decode("utf-8", "ignore")
-    except (zipfile.BadZipFile, KeyError):
+            # La CDR real pesa pocos KB: se ignoran entradas grandes (protección contra "zip bombs").
+            entrada = next(
+                (i for i in zf.infolist() if i.filename.lower().endswith(".xml") and i.file_size <= MAX_XML_CDR),
+                None,
+            )
+            xml = zf.read(entrada).decode("utf-8", "ignore") if entrada else ""
+    except (zipfile.BadZipFile, KeyError, OSError):
         return None, None
     codigo = re.search(r"<cbc:ResponseCode[^>]*>([^<]+)</cbc:ResponseCode>", xml)
     descripcion = re.search(r"<cbc:Description[^>]*>([^<]+)</cbc:Description>", xml)

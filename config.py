@@ -154,6 +154,7 @@ class Config:
     SUNAT_SERIE_NC_BOLETA = _texto("SUNAT_SERIE_NC_BOLETA", "BC01")
     SUNAT_SERIE_NC_FACTURA = _texto("SUNAT_SERIE_NC_FACTURA", "FC01")
     SUNAT_REINTENTOS = _entero("SUNAT_REINTENTOS", 3)
+    SUNAT_ESPERA = _entero("SUNAT_ESPERA", 1)
     COMPROBANTES_DIR = _texto("COMPROBANTES_DIR", "comprobantes")
     # Copia en la nube de la carpeta de comprobantes (Supabase Storage, bucket privado).
     # El disco de Render se borra en cada despliegue: la nube conserva los archivos y la
@@ -198,3 +199,4 @@ class Config:
     INTEGRACION_TIMEOUT = _entero("INTEGRACION_TIMEOUT", 20)
     INTEGRACION_MAX_PAGINAS = _entero("INTEGRACION_MAX_PAGINAS", 50)
     INTEGRACION_MAX_REGISTROS = _entero("INTEGRACION_MAX_REGISTROS", 5000)
+    INTEGRACION_MAX_MB = _entero("INTEGRACION_MAX_MB", 5)

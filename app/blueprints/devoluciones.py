@@ -71,7 +71,7 @@ def _leer_lineas(venta, items):
         try:
             det_id, cantidad = int(it.get("venta_detalle_id")), int(it.get("cantidad") or 0)
         except (TypeError, ValueError, AttributeError):
-            raise ApiError("datos_invalidos", "Cada producto debe indicar venta_detalle_id y cantidad.", 400)
+            raise ApiError("datos_invalidos", "Cada producto debe indicar venta_detalle_id y cantidad.", 400) from None
         if cantidad <= 0:
             continue
         det = por_id.get(det_id)

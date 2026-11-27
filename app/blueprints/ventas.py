@@ -26,6 +26,7 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import jwt_required
 
 from ..errors import ApiError
+from ..services.seguridad import patron_like
 from ..extensions import db, limiter
 from ..models import Producto, Usuario, Venta, VentaDetalle, VentaPago, ahora
 from ..services import consulta_documento, procedimientos
@@ -51,7 +52,7 @@ def rango_fechas(desde_txt, hasta_txt):
         try:
             return datetime.strptime(txt, "%Y-%m-%d").date()
         except (TypeError, ValueError):
-            raise ApiError("fecha_invalida", f"La fecha '{etiqueta}' debe tener formato AAAA-MM-DD.", 400)
+            raise ApiError("fecha_invalida", f"La fecha '{etiqueta}' debe tener formato AAAA-MM-DD.", 400) from None
 
     inicio = fin = None
     if desde_txt:
@@ -91,7 +92,7 @@ def listar_ventas():
         query = query.filter(Venta.usuario_id == usuario_id)
     q = (request.args.get("q") or "").strip()
     if q:
-        like = f"%{q}%"
+        like = patron_like(q)
         query = query.filter(
             db.or_(
                 Venta.codigo.ilike(like),
@@ -213,7 +214,7 @@ def _decimal(valor, mensaje):
     try:
         return Decimal(str(valor)).quantize(CENTIMO)
     except (InvalidOperation, ValueError, TypeError):
-        raise ApiError("monto_invalido", mensaje, 400)
+        raise ApiError("monto_invalido", mensaje, 400) from None
 
 
 def _leer_pagos(data, total):
@@ -344,7 +345,7 @@ def crear_venta():
             pid = int(it.get("producto_id"))
             cantidad = int(it.get("cantidad") or 0)
         except (TypeError, ValueError):
-            raise ApiError("datos_invalidos", "Cada ítem debe incluir producto_id y cantidad numéricos.", 400)
+            raise ApiError("datos_invalidos", "Cada ítem debe incluir producto_id y cantidad numéricos.", 400) from None
         if cantidad <= 0:
             raise ApiError("cantidad_invalida", "La cantidad de cada ítem debe ser mayor a cero.", 400)
         cantidades[pid] = cantidades.get(pid, 0) + cantidad

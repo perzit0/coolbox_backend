@@ -53,7 +53,7 @@ def consultar(numero):
         )
     except requests.RequestException as exc:
         log.warning("Consulta de %s sin respuesta: %s", "RUC" if es_ruc else "DNI", exc)
-        raise ApiError("consulta_sin_respuesta", "El servicio de consulta no respondió: escriba el nombre.", 503)
+        raise ApiError("consulta_sin_respuesta", "El servicio de consulta no respondió: escriba el nombre.", 503) from None
     if resp.status_code == 404:
         raise ApiError("documento_no_encontrado", "No se encontró el documento. Verifíquelo o escriba el nombre.", 404)
     if resp.status_code >= 400:
@@ -62,7 +62,7 @@ def consultar(numero):
     try:
         datos = resp.json()
     except ValueError:
-        raise ApiError("consulta_sin_respuesta", "El servicio de consulta respondió en un formato inesperado.", 503)
+        raise ApiError("consulta_sin_respuesta", "El servicio de consulta respondió en un formato inesperado.", 503) from None
     datos = datos.get("data", datos) if isinstance(datos, dict) else {}
     nombre = (_nombre_empresa(datos) if es_ruc else _nombre_persona(datos)).strip()
     if not nombre:

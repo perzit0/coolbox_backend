@@ -20,6 +20,7 @@ comprobante_api_id, estado_sunat...), por eso el mismo flujo sirve para los dos.
 """
 
 import logging
+import time
 from decimal import ROUND_HALF_UP, Decimal
 
 import requests
@@ -320,6 +321,9 @@ def _meta(doc, documento):
     }
 
 
+MAX_ARCHIVO = 15 * 1024 * 1024  # un PDF/XML/CDR de comprobante pesa KB, no decenas de MB
+
+
 def _guardar(doc, documento, ruta, headers):
     """Descarga PDF, XML y CDR y los guarda en el gestor documental. Devuelve el mensaje de la CDR."""
     base_url = _url(f"{ruta}/{doc.comprobante_api_id}")
@@ -336,6 +340,11 @@ def _guardar(doc, documento, ruta, headers):
                 raise
             log.warning("%s %s: la API no entregó la CDR: %s", documento, doc.codigo, exc)
             continue
+        if not resp.content or len(resp.content) > MAX_ARCHIVO:
+            if obligatorio:
+                raise SunatError(f"La API de facturación entregó un {formato.upper()} vacío o demasiado grande.")
+            log.warning("%s %s: CDR vacía o demasiado grande, se omite", documento, doc.codigo)
+            continue
         rel = archivos.ruta_relativa(
             documento, doc.fecha, doc.comprobante_serie, doc.comprobante_numero, formato, doc.codigo
         )
@@ -346,6 +355,19 @@ def _guardar(doc, documento, ruta, headers):
             if descripcion:
                 mensaje_cdr = f"{descripcion} (CDR código {codigo})"[:300]
     return mensaje_cdr
+
+
+def _mensaje_amigable(exc):
+    """Mensaje para el usuario sin hosts, rutas ni trazas internas (el detalle va al log)."""
+    if isinstance(exc, SunatError):
+        return str(exc)[:280]
+    if isinstance(exc, requests.Timeout):
+        return "La API de facturación tardó demasiado en responder. Pulsa Reintentar."
+    if isinstance(exc, requests.ConnectionError):
+        return "No se pudo conectar con la API de facturación (¿túnel o servidor apagado?). Pulsa Reintentar."
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        return f"La API de facturación respondió con error HTTP {exc.response.status_code}."
+    return "No se pudo emitir el comprobante. Pulsa Reintentar."
 
 
 def _emitir(doc, documento, armar_cuerpo):
@@ -374,8 +396,10 @@ def _emitir(doc, documento, armar_cuerpo):
             )
             return doc
         except (requests.RequestException, SunatError, ValueError) as exc:
-            ultimo_error = str(exc)[:280]
-            log.warning("%s %s: intento %s fallido: %s", documento, doc.codigo, intento, ultimo_error)
+            ultimo_error = _mensaje_amigable(exc)
+            log.warning("%s %s: intento %s fallido: %s", documento, doc.codigo, intento, str(exc)[:300])
+            if intento < max(_cfg("SUNAT_REINTENTOS", 3), 1):
+                time.sleep(min(_cfg("SUNAT_ESPERA", 1) * intento, 5))
     doc.estado_sunat, doc.sunat_mensaje = "error", ultimo_error
     return doc
 

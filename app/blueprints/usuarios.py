@@ -18,7 +18,7 @@ from ..errors import ApiError
 from ..extensions import db
 from ..models import Rol, Usuario
 from ..services.email_generator import build_email
-from ..services.seguridad import generar_password_temporal, validar_password
+from ..services.seguridad import generar_password_temporal, patron_like, validar_password
 from .auth import _usuario_actual, require_permiso
 
 bp = Blueprint("usuarios", __name__)
@@ -58,7 +58,7 @@ def listar_usuarios():
     if estado in ("activo", "inactivo"):
         query = query.filter(Usuario.estado == estado)
     if q:
-        like = f"%{q}%"
+        like = patron_like(q)
         query = query.filter(
             db.or_(
                 Usuario.nombres.ilike(like),

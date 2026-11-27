@@ -16,6 +16,7 @@ Flujo:
        (obligatorio la primera vez y disponible siempre desde "Mi cuenta").
 """
 
+import hashlib
 from datetime import timezone
 
 from flask import Blueprint, current_app, jsonify, request
@@ -42,11 +43,17 @@ def _verificar_relleno(password):
 bp = Blueprint("auth", __name__)
 
 
+def _huella_sesion(usuario: Usuario):
+    """Huella corta de la contraseña: si cambia (o la resetea el admin) los tokens anteriores dejan de valer."""
+    return hashlib.sha256(f"{usuario.id}:{usuario.password_hash}".encode()).hexdigest()[:16]
+
+
 def _hacer_token(usuario: Usuario, rol: Rol | None = None):
     """Construye un JWT. `es_admin` refleja el rol ACTIVO, no los roles del usuario."""
     additional_claims = {
         "es_admin": bool(rol and rol.es_admin),
         "rol_activo_id": rol.id if rol else None,
+        "sv": _huella_sesion(usuario),
     }
     return create_access_token(identity=str(usuario.id), additional_claims=additional_claims)
 
@@ -202,7 +209,12 @@ def cambiar_password():
     usuario.set_password(nueva)
     usuario.debe_cambiar_password = False
     db.session.commit()
-    return jsonify(usuario=usuario.to_dict(), mensaje="Contraseña actualizada correctamente.")
+    # Nuevo token (con la nueva huella) para esta pestaña; las demás sesiones quedan cerradas.
+    return jsonify(
+        usuario=usuario.to_dict(),
+        access_token=_hacer_token(usuario, _rol_activo()),
+        mensaje="Contraseña actualizada correctamente.",
+    )
 
 
 @bp.patch("/auth/perfil")
@@ -252,7 +264,10 @@ def _usuario_actual():
     # Los tokens de clientes de la tienda online ("cliente:<id>") no sirven en el sistema interno
     if get_jwt().get("tipo") == "cliente" or not str(get_jwt_identity()).isdigit():
         raise ApiError("token_de_cliente", "Esta sesión es de la tienda online, no del sistema de caja.", 403)
-    return db.session.get(Usuario, int(get_jwt_identity()))
+    usuario = db.session.get(Usuario, int(get_jwt_identity()))
+    if usuario and get_jwt().get("sv") != _huella_sesion(usuario):
+        raise ApiError("sesion_revocada", "Tu contraseña cambió. Vuelve a iniciar sesión.", 401)
+    return usuario
 
 
 def _usuario_actual_o_404():

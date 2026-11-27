@@ -306,7 +306,7 @@ def _dec(v, campo, minimo=None, maximo=None):
     try:
         d = Decimal(str(v)).quantize(CENT)
     except (InvalidOperation, TypeError, ValueError):
-        raise ApiError("promocion_invalida", f"Indique {campo}.", 400)
+        raise ApiError("promocion_invalida", f"Indique {campo}.", 400) from None
     if minimo is not None and d < minimo or maximo is not None and d > maximo:
         raise ApiError(
             "promocion_invalida", f"{campo[0].upper() + campo[1:]} debe estar entre {minimo} y {maximo}.", 400
@@ -318,7 +318,7 @@ def _fecha(v, campo):
     try:
         dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
     except ValueError:
-        raise ApiError("promocion_invalida", f"La fecha de {campo} no es válida.", 400)
+        raise ApiError("promocion_invalida", f"La fecha de {campo} no es válida.", 400) from None
     if dt.tzinfo is None:
         # Fecha y hora de Lima (UTC-5) escritas por el administrador
         from datetime import timedelta
@@ -351,7 +351,7 @@ def aplicar_datos(promo, data, nueva):
         try:
             n, m = int(data.get("lleva")), int(data.get("paga"))
         except (TypeError, ValueError):
-            raise ApiError("promocion_invalida", "Indique cuántas unidades lleva y cuántas paga.", 400)
+            raise ApiError("promocion_invalida", "Indique cuántas unidades lleva y cuántas paga.", 400) from None
         if not (2 <= n <= 10 and 1 <= m < n):
             raise ApiError("promocion_invalida", "En 'lleva N y paga M', N va de 2 a 10 y M debe ser menor que N.", 400)
         promo.lleva, promo.paga = n, m

@@ -108,6 +108,14 @@ AS $$
     SELECT nullif(left(btrim(regexp_replace(coalesce(p_valor, ''), '\s+', ' ', 'g')), p_largo), '')
 $$;
 
+-- Patrón '%texto%' para ILIKE con los comodines (% y _) escapados: buscar "50%" no trae todo.
+CREATE FUNCTION sp_like(p_valor text, p_largo integer DEFAULT 80)
+RETURNS text
+LANGUAGE sql IMMUTABLE
+AS $$
+    SELECT '%' || replace(replace(replace(coalesce(sp_texto(p_valor, p_largo), ''), '\', '\\'), '%', '\%'), '_', '\_') || '%'
+$$;
+
 -- Lanza un error de negocio que el backend convierte en respuesta HTTP:
 -- MESSAGE = código del error, DETAIL = texto para el usuario, HINT = estado HTTP.
 CREATE FUNCTION sp_error(p_codigo text, p_texto text, p_http integer DEFAULT 409)
@@ -333,8 +341,8 @@ AS $$
       AND (p_activo IS NULL OR m.activo = p_activo)
       AND (
           coalesce(btrim(p_buscar), '') = ''
-          OR m.nro_documento ILIKE '%' || btrim(p_buscar) || '%'
-          OR concat_ws(' ', m.nombres, m.apellidos, m.razon_social, m.email) ILIKE '%' || btrim(p_buscar) || '%'
+          OR m.nro_documento ILIKE sp_like(p_buscar)
+          OR concat_ws(' ', m.nombres, m.apellidos, m.razon_social, m.email) ILIKE sp_like(p_buscar)
       )
     ORDER BY m.fecha_actualizacion DESC, m.id DESC
     LIMIT least(greatest(coalesce(p_limite, 50), 1), 200)
@@ -1048,10 +1056,10 @@ AS $$
       AND (p_hasta IS NULL OR fecha_emision <= p_hasta)
       AND (sp_texto(p_tipo, 15) IS NULL OR tipo = p_tipo)
       AND (sp_texto(p_texto, 80) IS NULL
-           OR cliente_documento ILIKE '%' || p_texto || '%'
-           OR cliente_nombre ILIKE '%' || p_texto || '%'
-           OR (serie || '-' || numero) ILIKE '%' || p_texto || '%'
-           OR origen_codigo ILIKE '%' || p_texto || '%')
+           OR cliente_documento ILIKE sp_like(p_texto)
+           OR cliente_nombre ILIKE sp_like(p_texto)
+           OR (serie || '-' || numero) ILIKE sp_like(p_texto)
+           OR origen_codigo ILIKE sp_like(p_texto))
     ORDER BY fecha_emision DESC, serie, numero, formato
     LIMIT 600
 $$;
