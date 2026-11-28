@@ -12,7 +12,7 @@ Lo que se muestra sale del índice comprobante_archivo (procedimientos sp_compro
 los archivos se leen de la carpeta local, no de la API de facturación.
 """
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from flask import Blueprint, current_app, jsonify, request, send_file
 from flask_jwt_extended import jwt_required
@@ -20,7 +20,7 @@ from flask_jwt_extended import jwt_required
 from ..errors import ApiError
 from ..extensions import db
 from ..models import Devolucion, Venta
-from ..models_archivos import TIPOS
+from ..models_archivos import TIPOS, ComprobanteArchivo
 from ..models_tienda import PedidoComprobante, PedidoDevolucion
 from ..services import archivos
 from ..services import procedimientos as sp
@@ -152,6 +152,31 @@ def verificar(archivo_id):
     return jsonify(archivo=fila["ruta"].rsplit("/", 1)[-1], **archivos.verificar(fila["ruta"]))
 
 
+def _rutas_en_uso():
+    """Rutas que algún comprobante (en cualquier estado) tiene registradas."""
+    en_uso = set()
+    for clase in (Venta, Devolucion, PedidoDevolucion, PedidoComprobante):
+        for columna, _ in sunat_svc.FORMATOS.values():
+            campo = getattr(clase, columna)
+            en_uso.update(r for (r,) in db.session.query(campo).filter(campo.isnot(None)).all())
+    return en_uso
+
+
+def _quitar_huerfanos():
+    """Archivos del índice que ya ningún comprobante usa (p. ej. la copia suelta que quedó
+    cuando un comprobante se volvió a descargar en su carpeta nueva). Se respetan los
+    guardados en los últimos 15 minutos por si hay una emisión en curso."""
+    en_uso = _rutas_en_uso()
+    limite = datetime.now(timezone.utc) - timedelta(minutes=15)
+    quitados = 0
+    for (ruta,) in db.session.query(ComprobanteArchivo.ruta).filter(ComprobanteArchivo.fecha_guardado < limite).all():
+        if ruta not in en_uso:
+            archivos.borrar(ruta)
+            quitados += 1
+    db.session.commit()
+    return quitados
+
+
 def _documentos():
     """Comprobantes aceptados por la SUNAT con su tipo de documento."""
     for venta in Venta.query.filter(Venta.estado_sunat == "aceptado").all():
@@ -174,7 +199,7 @@ def sincronizar():
     sp.exigir()
     resultado = {
         "revisados": 0, "reorganizados": 0, "desde_nube": 0, "recuperados": 0,
-        "subidos": 0, "pendientes": 0, "corregidos": 0, "sin_archivos": [],
+        "subidos": 0, "pendientes": 0, "corregidos": 0, "sin_archivos": [], "huerfanos": 0,
     }
     for doc, documento in _documentos():
         if resultado["recuperados"] + resultado["reorganizados"] >= LIMITE_SINCRONIZACION:
@@ -232,6 +257,8 @@ def sincronizar():
                 resultado["recuperados"] += 1
             else:
                 resultado["sin_archivos"].append(f"{doc.comprobante_serie}-{doc.comprobante_numero}")
+    if not resultado["pendientes"]:
+        resultado["huerfanos"] = _quitar_huerfanos()
     if archivos.nube_activa():
         for f in sp.filas("sp_comprobantes_listar", None, None, None, None):
             local = None if f["en_nube"] else archivos.resolver(f["ruta"])

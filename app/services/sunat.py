@@ -486,15 +486,21 @@ def _recuperar(doc, documento):
     aceptado, se vuelve a descargar de la API y queda otra vez guardado."""
     if doc.estado_sunat != "aceptado" or not doc.comprobante_api_id or not _cfg("SUNAT_API_URL"):
         return False
+    anteriores = {columna: getattr(doc, columna) for columna, _ in FORMATOS.values()}
     try:
         _guardar(doc, documento, DOCUMENTOS[documento][0], _login())
         db.session.commit()
         log.info("%s %s: archivos recuperados desde la API de facturación", documento, doc.codigo)
-        return True
     except (requests.RequestException, SunatError, ValueError, OSError) as exc:
         db.session.rollback()
         log.warning("%s %s: no se pudieron recuperar los archivos: %s", documento, doc.codigo, exc)
         return False
+    # La copia anterior (otra ruta) ya no la usa nadie: se quita para no dejar archivos sueltos
+    for columna, ruta in anteriores.items():
+        if ruta and ruta != getattr(doc, columna):
+            archivos.borrar(ruta)
+    db.session.commit()
+    return True
 
 
 def entregar(doc, documento, formato, mensaje="El comprobante aún no está disponible."):
