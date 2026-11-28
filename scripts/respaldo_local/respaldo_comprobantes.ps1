@@ -10,6 +10,8 @@
   - Avisa al sistema cuantos archivos tiene (pantalla Comprobantes > Respaldo local).
   - Los archivos que ya no figuran en el sistema (estructura anterior o archivos equivocados)
     se mueven a _retirados\ (nunca se borran).
+  - Si el servidor perdio un archivo (Render borra su disco al desplegar) y esta PC lo tiene,
+    se lo devuelve; el servidor solo lo acepta si su huella o su contenido coinciden.
   - -Verificar recalcula la huella de todos los archivos locales y repone los alterados.
 
   Compatible con Windows PowerShell 5.1. La configuracion (URL, clave y carpeta) esta en
@@ -59,9 +61,24 @@ function Llamar([string]$url) {
     }
 }
 
+function Devolver([string]$ruta, [string]$archivo) {
+    # Envia el archivo al servidor. Devuelve 'ok', 'rechazado' (4xx) o 'error' (red/servidor).
+    try {
+        Invoke-RestMethod -Uri "$Api/respaldo/devolver?ruta=$([uri]::EscapeDataString($ruta))" -Method Post `
+            -Headers $Cabeceras -ContentType 'application/octet-stream' -InFile $archivo -TimeoutSec 120 | Out-Null
+        return 'ok'
+    } catch {
+        $codigo = $null
+        if ($_.Exception.Response) { $codigo = [int]$_.Exception.Response.StatusCode }
+        if ($codigo -ge 400 -and $codigo -lt 500) { return 'rechazado' }
+        return 'error'
+    }
+}
+
 function Huella([string]$ruta) { (Get-FileHash -Path $ruta -Algorithm SHA256).Hash.ToLowerInvariant() }
 
 $enIndice = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+$devueltos = 0; $importados = 0
 $total = 0; $tiene = 0; $bytes = [int64]0; $descargados = 0; $pendientes = 0; $errores = 0; $alterados = 0
 $inicio = Get-Date
 try {
@@ -108,6 +125,10 @@ try {
                     continue
                 }
             }
+            elseif ($a.en_servidor -eq $false) {
+                # El servidor ya no tiene este archivo y esta PC si: se lo devuelve
+                if ((Devolver $ruta $destino) -eq 'ok') { $devueltos++ }
+            }
             $tiene++; $bytes += [int64]$a.bytes
         }
         $desde = $pagina.siguiente
@@ -121,16 +142,33 @@ try {
         Get-ChildItem -LiteralPath $Carpeta -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
             $completo = $_.FullName
             $relativo = $completo.Substring($raiz.Length).TrimStart('\', '/')
-            if ($relativo -like '_retirados*' -or $completo -like '*.descarga' -or $enIndice.Contains($completo)) { return }
+            # Solo se ordenan archivos de comprobantes (pdf, xml, zip) dentro de sus carpetas de tipo;
+            # cualquier otra cosa que se haya guardado aqui se deja como esta.
+            if ($relativo -notmatch '^(boletas|facturas|notas_credito)[\\/]' -or $_.Extension -notmatch '^\.(pdf|xml|zip)$') { return }
+            if ($enIndice.Contains($completo)) { return }
+            # Archivo de un comprobante que el servidor no tiene registrado: se le ofrece primero
+            $rel = $relativo -replace '\\', '/'
+            if ($rel -match '^(boletas|facturas|notas_credito)/\d{4}/\d{2}/\d{2}/([A-Z0-9]{4}-\d+)/\2(-CDR)?\.(pdf|xml|zip)$') {
+                $r = Devolver $rel $completo
+                if ($r -eq 'ok') { $importados++; return }
+                if ($r -eq 'error') { return }   # sin conexion: se deja donde esta
+            }
             $nuevo = Join-Path $papelera $relativo
-            New-Item -ItemType Directory -Force -Path (Split-Path $nuevo -Parent) | Out-Null
-            Move-Item -LiteralPath $completo -Destination $nuevo -Force
-            $retirados++
+            try {
+                New-Item -ItemType Directory -Force -Path (Split-Path $nuevo -Parent) | Out-Null
+                Move-Item -LiteralPath $completo -Destination $nuevo -Force -ErrorAction Stop
+                $retirados++
+            } catch { Escribir "No se pudo mover ${relativo}: $($_.Exception.Message)" }
         }
         # Carpetas que quedaron vacias
-        Get-ChildItem -LiteralPath $Carpeta -Recurse -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notlike '*_retirados*' } | Sort-Object { $_.FullName.Length } -Descending |
-            ForEach-Object { if (-not (Get-ChildItem -LiteralPath $_.FullName -Force)) { Remove-Item -LiteralPath $_.FullName -Force } }
+        foreach ($tipo in 'boletas', 'facturas', 'notas_credito') {
+            $dirTipo = Join-Path $Carpeta $tipo
+            if (-not (Test-Path -LiteralPath $dirTipo)) { continue }
+            Get-ChildItem -LiteralPath $dirTipo -Recurse -Directory -ErrorAction SilentlyContinue |
+                Sort-Object { $_.FullName.Length } -Descending |
+                ForEach-Object { if (-not (Get-ChildItem -LiteralPath $_.FullName -Force)) { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue } }
+        }
+        if ($importados) { Escribir "$importados archivos de esta PC se registraron en el sistema" }
         if ($retirados) { Escribir "$retirados archivos que ya no figuran en el sistema se movieron a _retirados" }
     }
 
@@ -146,6 +184,7 @@ try {
     $seg = [int]((Get-Date) - $inicio).TotalSeconds
     $resumen = "Respaldo: $tiene de $total archivos en $Carpeta ($descargados nuevos"
     if ($Verificar) { $resumen += ", $alterados repuestos" }
+    if ($devueltos) { $resumen += ", $devueltos devueltos al servidor" }
     if ($pendientes) { $resumen += ", $pendientes aun no disponibles" }
     if ($errores) { $resumen += ", $errores con error" }
     Escribir "$resumen) en $seg s."

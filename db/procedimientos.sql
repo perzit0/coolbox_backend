@@ -1195,7 +1195,8 @@ RETURNS TABLE (archivo jsonb)
 LANGUAGE sql STABLE
 AS $$
     SELECT jsonb_build_object('id', a.id, 'ruta', a.ruta, 'formato', a.formato, 'bytes', a.bytes,
-                              'sha256', a.sha256, 'tipo', a.tipo, 'fecha_emision', a.fecha_emision)
+                              'sha256', a.sha256, 'tipo', a.tipo, 'fecha_emision', a.fecha_emision,
+                              'en_nube', a.en_nube)
     FROM comprobante_archivo a
     WHERE a.id > coalesce(p_desde_id, 0)
     ORDER BY a.id

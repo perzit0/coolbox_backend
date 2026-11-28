@@ -25,6 +25,7 @@ from flask_jwt_extended import create_access_token, get_jwt, get_jwt_identity, j
 from ..errors import ApiError
 from ..extensions import db, limiter
 from ..models import Rol, Usuario, ahora
+from ..services.despertar import despertar as despertar_facturacion
 from ..services.seguridad import duracion_bloqueo, max_intentos, minutos_bloqueo, validar_password
 
 # Hash de relleno: un correo inexistente tarda lo mismo que uno real (no revela qué correos existen).
@@ -68,6 +69,7 @@ def _aware(dt):
 @limiter.limit(lambda: current_app.config["LIMITE_LOGIN"])
 def login():
     """Ingreso único para todo el personal (administradores incluidos)."""
+    despertar_facturacion(current_app.config)  # chispa: la API de facturación empieza a arrancar
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""

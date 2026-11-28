@@ -62,13 +62,38 @@ def _url(ruta):
     return _cfg("SUNAT_API_URL").rstrip("/") + _cfg("SUNAT_API_PREFIX").rstrip("/") + ruta
 
 
+ESPERA_DESPERTAR = 75  # segundos que se espera a que la API de facturación arranque (Render gratis)
+_sin_respuesta_hasta = 0.0  # si ya se esperó en vano, no se vuelve a esperar durante 2 min
+
+
 def _login():
-    resp = requests.post(
-        _cfg("SUNAT_API_URL").rstrip("/") + _cfg("SUNAT_LOGIN_PATH"),
-        json={"email": _cfg("SUNAT_API_EMAIL"), "password": _cfg("SUNAT_API_PASSWORD")},
-        headers={"Accept": "application/json"},
-        timeout=_cfg("SUNAT_TIMEOUT", 30),
-    )
+    """Token de la API de facturación. Si la API está dormida, Render responde 502/503
+    mientras arranca: se reintenta cada 5 s hasta ESPERA_DESPERTAR en lugar de fallar."""
+    global _sin_respuesta_hasta
+    ahora = time.monotonic()
+    espera = 0 if ahora < _sin_respuesta_hasta else float(_cfg("SUNAT_ESPERA_DESPERTAR", ESPERA_DESPERTAR))
+    limite = ahora + espera
+    while True:
+        try:
+            resp = requests.post(
+                _cfg("SUNAT_API_URL").rstrip("/") + _cfg("SUNAT_LOGIN_PATH"),
+                json={"email": _cfg("SUNAT_API_EMAIL"), "password": _cfg("SUNAT_API_PASSWORD")},
+                headers={"Accept": "application/json"},
+                timeout=_cfg("SUNAT_TIMEOUT", 30),
+            )
+            arrancando = resp.status_code in (502, 503, 504)
+        except requests.ConnectionError:
+            arrancando, resp = True, None
+        if not arrancando:
+            _sin_respuesta_hasta = 0.0
+            break
+        if time.monotonic() + 5 > limite:
+            _sin_respuesta_hasta = time.monotonic() + 120
+            break
+        log.info("La API de facturación está despertando; se reintenta en 5 s")
+        time.sleep(5)
+    if resp is None:
+        raise requests.ConnectionError("La API de facturación no respondió.")
     resp.raise_for_status()
     token = resp.json().get("access_token")
     if not token:
