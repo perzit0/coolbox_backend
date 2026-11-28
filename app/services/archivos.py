@@ -94,7 +94,11 @@ def nube_activa():
 
 def _cabeceras_nube(extra=None):
     clave = _cfg("SUPABASE_SERVICE_KEY")
-    cabeceras = {"apikey": clave, "Authorization": f"Bearer {clave}"}
+    cabeceras = {"apikey": clave}
+    # Las claves nuevas (sb_secret_...) no son JWT: van solo en "apikey". La clave antigua
+    # service_role (un JWT) también se envía como Bearer, como pide la API de Storage.
+    if not clave.startswith("sb_"):
+        cabeceras["Authorization"] = f"Bearer {clave}"
     cabeceras.update(extra or {})
     return cabeceras
 
@@ -147,7 +151,10 @@ def bajar(ruta):
     try:
         bucket = _cfg("COMPROBANTES_BUCKET") or "comprobantes"
         resp = requests.get(_url_nube(f"/object/{bucket}/{quote(ruta)}"), headers=_cabeceras_nube(), timeout=30)
-        return resp.content if resp.status_code == 200 else None
+        if resp.status_code != 200:
+            log.warning("Nube: no se bajó %s: %s %s", ruta, resp.status_code, resp.text[:200])
+            return None
+        return resp.content
     except requests.RequestException as exc:
         log.warning("Nube: no se bajó %s: %s", ruta, exc)
         return None
